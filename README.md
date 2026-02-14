@@ -11,6 +11,62 @@
 
 ---
 
+## When to Use This System
+
+**Ideal for:**
+- 📋 **Complex Project Plans** - Technical specifications, architecture documents, implementation roadmaps
+- 🏗️ **Software Design Documents** - API designs, system architectures, database schemas
+- 📝 **Technical Proposals** - RFPs, technical white papers, research proposals
+- 🎯 **Strategic Planning** - Multi-phase project plans requiring stakeholder consensus
+
+**Not recommended for:**
+- ⚠️ Simple configuration files or environment variables
+- ⚠️ Single-value decisions or yes/no questions
+- ⚠️ Quick edits to existing documents
+- ⚠️ Non-technical content without clear requirements
+
+**The system excels when you need:**
+- Multiple AI perspectives (ChatGPT for clarity, Claude for security, Copilot for implementation)
+- Iterative refinement until all agents reach consensus
+- Phase-aware validation to prevent scope creep
+- Documented decision history via tradeoff logs
+
+---
+
+## Example Use Cases
+
+### ✅ Good Use Case: Microservices Architecture Plan
+```markdown
+# Initial Plan (ai/01_plan.md)
+## Project: E-Commerce Platform Microservices
+
+### Architecture Goals
+- Decompose monolith into 5 microservices
+- Event-driven communication via message queues
+- Independent deployment pipelines
+
+### Phase 1: Authentication Service
+- JWT-based auth
+- OAuth2 integration
+- Rate limiting
+...
+```
+**Result:** ChatGPT ensures completeness, Claude identifies security gaps (OWASP compliance, token storage), Copilot validates implementation feasibility.
+
+### ❌ Poor Use Case: Simple Configuration
+```markdown
+# Should we use Redis or Memcached?
+```
+**Why it's overkill:** This is a single decision point. Use a single LLM or make the decision directly.
+
+### ✅ Good Use Case: API Design Document
+Multi-page REST API specification requiring consensus on endpoints, authentication, versioning, error handling, and rate limiting across multiple stakeholders.
+
+### ❌ Poor Use Case: Bug Fix Description
+Single bug report or feature request. Too narrow for multi-agent review.
+
+---
+
 ## Features
 
 - **Multi-Agent Loop:** ChatGPT generates initial plan, Claude reviews and hardens it, Copilot/Augment performs code-level and phase-aware checks.  
