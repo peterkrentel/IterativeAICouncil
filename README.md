@@ -144,22 +144,93 @@ docker run -v $(pwd)/ai:/app/ai --env-file config.env iterative-ai-council
 
 ## Workflow
 
-1. **Ground Plan**
-   - Start with `01_plan.md`.
-   - ChatGPT agent generates initial plan structure.
+**Visual Overview:**
 
-2. **LLM Reviews**
-   - ChatGPT reviews plan → `02_review_chatgpt.md`.
-   - Claude reviews plan → `03_review_claude.md`.
-   - Copilot/Augment reviews plan → `04_review_copilot.md`.
+```
+┌─────────────────┐
+│  01_plan.md     │  ← You create initial plan
+│  (Iteration 0)  │
+└────────┬────────┘
+         │
+         ▼
+    ┌────────────────────┐
+    │  ITERATION LOOP    │
+    └────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────┐
+│  Step A: Multi-Agent Review        │
+├────────────────────────────────────┤
+│  ChatGPT → 02_review_chatgpt.md   │
+│  Claude  → 03_review_claude.md    │
+│  Copilot → 04_review_copilot.md   │
+└────────┬───────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────┐
+│  Step B: AI Integration            │
+├────────────────────────────────────┤
+│  ChatGPT reads:                    │
+│   • Current plan (01_plan.md)      │
+│   • All agent reviews              │
+│  ↓                                 │
+│  Generates UPDATED plan            │
+│  (addresses feedback, fixes issues)│
+│  ↓                                 │
+│  Writes back to 01_plan.md         │
+└────────┬───────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────┐
+│  Step C: Convergence Check         │
+├────────────────────────────────────┤
+│  Agents approve? Few concerns?     │
+└────────┬───────────────────────────┘
+         │
+    ┌────┴────┐
+    │         │
+    NO       YES
+    │         │
+    │         ▼
+    │    ┌─────────────┐
+    │    │ 05_final.md │
+    │    └─────────────┘
+    │
+    └─► Loop back to Step A
+        (with updated plan)
+```
 
-3. **Integrator / Feedback Merge**
-   - Orchestrator merges feedback from all agents into `01_plan.md`.
-   - Updates `05_final.md` with stabilized plan.
+**How the iterative refinement actually works:**
 
-4. **Iteration / Convergence**
-   - Loop continues until no new critical feedback emerges.
-   - Tradeoff and phase-aware decisions logged in `tradeoff_log.md`.
+1. **Initial Plan Input**
+   - You create `ai/01_plan.md` with your project plan
+   - This is the starting point - can be rough, incomplete, or early draft
+
+2. **Iteration Loop** (repeats until convergence):
+   
+   **Step A: Multi-Agent Review**
+   - ChatGPT reviews the current plan → analyzes clarity, completeness, feasibility
+   - Claude reviews the current plan → identifies security risks, edge cases, concerns  
+   - Copilot reviews the current plan → checks code feasibility, phase appropriateness
+   - Each agent writes their review to `02-04_review_*.md`
+
+   **Step B: Feedback Integration** 
+   - **ChatGPT acts as integrator**: Takes original plan + all agent feedback
+   - **Updates the plan content** based on suggestions (not just appending!)
+   - Addresses concerns, improves clarity, adds missing details
+   - Writes updated plan back to `01_plan.md`
+
+   **Step C: Convergence Check**
+   - Analyzes agent reviews for approval signals vs. concerns
+   - If agents approve (>60% threshold) and few concerns remain → **DONE**
+   - Otherwise → loop back to Step A with the updated plan
+
+3. **Final Output**
+   - Converged plan written to `05_final.md`
+   - All iteration history in `tradeoff_log.md`
+   - Individual agent reviews preserved in `02-04_review_*.md`
+
+**Key Point:** The plan content actually changes each iteration based on agent feedback. This is true iterative refinement, not just review collection.
 
 ---
 

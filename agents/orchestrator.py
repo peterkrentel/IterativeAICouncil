@@ -114,21 +114,76 @@ class Orchestrator:
         """
         Merge feedback from all agents into updated plan.
         
-        This is a simple implementation that concatenates feedback.
-        Future versions could use AI-driven merging or diff-based updates.
+        Uses ChatGPT to intelligently integrate feedback from all agents
+        into an improved version of the plan.
         
         Args:
             plan: Current plan content
             reviews: Dictionary of agent reviews
             
         Returns:
-            Updated plan with merged feedback
+            Updated plan with feedback integrated
         """
-        # Simple merge strategy: append all feedback sections
-        merged = plan + "\n\n---\n## Feedback Integration\n\n"
+        # If no ChatGPT agent available, fall back to simple append
+        if 'chatgpt' not in self.agents or not hasattr(self.agents['chatgpt'], 'client') or not self.agents['chatgpt'].client:
+            return self._simple_merge_feedback(plan, reviews)
+        
+        # Build comprehensive feedback summary
+        feedback_summary = "# Agent Feedback Summary\n\n"
+        for agent_name, review in reviews.items():
+            feedback_summary += f"## {agent_name.title()} Agent:\n{review}\n\n"
+        
+        # Use ChatGPT to integrate feedback into plan
+        try:
+            integration_prompt = f"""You are a technical plan integrator. Your task is to update a project plan based on feedback from multiple AI agents.
+
+ORIGINAL PLAN:
+{plan}
+
+FEEDBACK FROM AGENTS:
+{feedback_summary}
+
+Your task:
+1. Review the original plan and all agent feedback
+2. Integrate the feedback to create an IMPROVED version of the plan
+3. Address concerns raised by agents
+4. Keep the same structure and format as the original
+5. Do NOT just append feedback - actually UPDATE the plan content based on the suggestions
+6. Return ONLY the updated plan, no meta-commentary
+
+Updated Plan:"""
+
+            response = self.agents['chatgpt'].client.chat.completions.create(
+                model=self.agents['chatgpt'].model,
+                messages=[
+                    {"role": "system", "content": "You are a technical plan integrator that improves plans based on multi-agent feedback."},
+                    {"role": "user", "content": integration_prompt}
+                ],
+                temperature=0.3,  # Lower temperature for more consistent integration
+                max_tokens=4000
+            )
+            
+            updated_plan = response.choices[0].message.content
+            
+            # Log the integration
+            self.log_tradeoff(f"Plan updated based on feedback from {len(reviews)} agents")
+            
+            return updated_plan
+            
+        except Exception as e:
+            print(f"  ⚠ Error integrating feedback via AI: {e}")
+            print(f"  ℹ Falling back to simple merge")
+            return self._simple_merge_feedback(plan, reviews)
+    
+    def _simple_merge_feedback(self, plan: str, reviews: Dict[str, str]) -> str:
+        """
+        Fallback: Simple merge that appends feedback sections.
+        Used when AI integration is not available.
+        """
+        merged = plan + "\n\n---\n## Agent Feedback (Iteration)\n\n"
         
         for agent_name, review in reviews.items():
-            merged += f"\n### {agent_name.title()} Review\n{review}\n"
+            merged += f"### {agent_name.title()} Review\n{review}\n\n"
         
         return merged
     
@@ -136,8 +191,8 @@ class Orchestrator:
         """
         Check if agents have reached consensus (convergence).
         
-        Simple heuristic: check if all reviews indicate no major changes needed.
-        Future versions could use more sophisticated AI-based analysis.
+        Analyzes reviews to determine if agents think the plan is ready.
+        Looks for explicit approval signals and absence of major concerns.
         
         Args:
             reviews: Dictionary of agent reviews
@@ -145,22 +200,65 @@ class Orchestrator:
         Returns:
             True if convergence achieved, False otherwise
         """
-        convergence_keywords = [
+        # Keywords indicating approval/convergence
+        approval_keywords = [
             "no major changes",
             "looks good",
             "approved",
             "no significant issues",
-            "ready to proceed"
+            "ready to proceed",
+            "ready for implementation",
+            "ready for code",
+            "plan is complete",
+            "no critical",
+            "convergence achieved"
         ]
         
-        converged_count = 0
-        for review in reviews.values():
-            review_lower = review.lower()
-            if any(keyword in review_lower for keyword in convergence_keywords):
-                converged_count += 1
+        # Keywords indicating more work needed
+        concern_keywords = [
+            "critical",
+            "must address",
+            "requires",
+            "missing",
+            "unclear",
+            "additional iteration",
+            "more work needed",
+            "significant issues",
+            "major concerns"
+        ]
         
-        # Consider converged if threshold of agents approve
-        return converged_count >= len(reviews) * self.convergence_threshold
+        approved_count = 0
+        concern_count = 0
+        
+        for agent_name, review in reviews.items():
+            review_lower = review.lower()
+            
+            # Check for approval signals
+            has_approval = any(keyword in review_lower for keyword in approval_keywords)
+            # Check for concerns
+            has_concerns = any(keyword in review_lower for keyword in concern_keywords)
+            
+            if has_approval and not has_concerns:
+                approved_count += 1
+                print(f"  ✓ {agent_name} signals approval")
+            elif has_concerns:
+                concern_count += 1
+                print(f"  ⚠ {agent_name} has concerns")
+            else:
+                print(f"  - {agent_name} neutral")
+        
+        # Consider converged if threshold of agents approve and few concerns
+        threshold_met = approved_count >= len(reviews) * self.convergence_threshold
+        few_concerns = concern_count < len(reviews) * 0.5
+        
+        converged = threshold_met and few_concerns
+        
+        if converged:
+            print(f"\n  → Convergence achieved: {approved_count}/{len(reviews)} agents approve")
+        else:
+            print(f"\n  → More iteration needed: {approved_count}/{len(reviews)} approve, {concern_count} have concerns")
+        
+        return converged
     
     def run(self) -> None:
         """
@@ -205,11 +303,25 @@ class Orchestrator:
                 break
             
             # Merge feedback into plan
-            print("\nMerging feedback...")
-            plan = self.merge_feedback(plan, reviews)
-            self.write_plan(plan)
+            print("\n" + "─" * 60)
+            if 'chatgpt' not in self.agents or not hasattr(self.agents['chatgpt'], 'client') or not self.agents['chatgpt'].client:
+                print("Integrating feedback (mock mode - feedback appended)...")
+                print("ℹ Configure OPENAI_KEY for AI-driven plan integration")
+            else:
+                print("Integrating feedback via AI...")
+            print("─" * 60)
             
-            self.log_tradeoff(f"Iteration {iteration} complete, feedback merged")
+            updated_plan = self.merge_feedback(plan, reviews)
+            
+            # Check if plan actually changed
+            if updated_plan != plan:
+                print(f"✓ Plan updated ({len(updated_plan) - len(plan):+d} chars)")
+                plan = updated_plan
+                self.write_plan(plan)
+            else:
+                print("ℹ Plan unchanged - agents may be satisfied")
+            
+            self.log_tradeoff(f"Iteration {iteration} complete, plan updated")
             
             if iteration == self.max_iterations:
                 print(f"\n⚠ Maximum iterations ({self.max_iterations}) reached")
