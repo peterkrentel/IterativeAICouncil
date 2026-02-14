@@ -127,8 +127,9 @@ class Orchestrator:
         """
         Merge feedback from all agents into updated plan.
         
-        Uses ChatGPT to intelligently integrate feedback from all agents
-        into an improved version of the plan.
+        Uses ChatGPT to intelligently integrate feedback from all agents,
+        with judgment on which suggestions to include based on quality,
+        synergy, and cross-agent validation.
         
         Args:
             plan: Current plan content
@@ -146,9 +147,9 @@ class Orchestrator:
         for agent_name, review in reviews.items():
             feedback_summary += f"## {agent_name.title()} Agent:\n{review}\n\n"
         
-        # Use ChatGPT to integrate feedback into plan
+        # Use ChatGPT to integrate feedback into plan with judgment
         try:
-            integration_prompt = f"""You are a technical plan integrator. Your task is to update a project plan based on feedback from multiple AI agents.
+            integration_prompt = f"""You are a technical plan integrator with judgment capabilities. Your task is to update a project plan based on feedback from multiple AI agents, but you must EVALUATE and JUDGE which feedback to include.
 
 ORIGINAL PLAN:
 {plan}
@@ -157,19 +158,40 @@ FEEDBACK FROM AGENTS:
 {feedback_summary}
 
 Your task:
-1. Review the original plan and all agent feedback
-2. Integrate the feedback to create an IMPROVED version of the plan
-3. Address concerns raised by agents
-4. Keep the same structure and format as the original
-5. Do NOT just append feedback - actually UPDATE the plan content based on the suggestions
-6. Return ONLY the updated plan, no meta-commentary
+1. **EVALUATE each piece of feedback** for:
+   - Quality and specificity
+   - Relevance to the plan's goals
+   - Whether it conflicts with or complements other agents' feedback
+   - Whether it's actionable vs. too vague
+
+2. **IDENTIFY SYNERGIES**: When multiple agents mention similar concerns, prioritize those
+   
+3. **RESOLVE CONFLICTS**: If agents disagree (e.g., ChatGPT wants more detail, Copilot says it's too complex), make a judgment call based on:
+   - Which agent's expertise is most relevant for that section
+   - Overall plan balance and clarity
+   
+4. **SELECT FEEDBACK TO INCLUDE**: Only integrate feedback that:
+   - Is concrete and actionable
+   - Improves clarity, security, or implementation feasibility
+   - Doesn't contradict higher-priority feedback from other agents
+   - Fits the current phase scope
+
+5. **CREATE IMPROVED PLAN**: 
+   - Update the plan content based on SELECTED feedback only
+   - Keep the same structure and format as the original
+   - Do NOT just append feedback - integrate it naturally into plan sections
+   - Add a brief "## Integration Notes" section at the end listing:
+     * Which feedback was integrated and why
+     * Any feedback deferred or rejected and why
+
+6. Return the updated plan with integration notes.
 
 Updated Plan:"""
 
             response = self.agents['chatgpt'].client.chat.completions.create(
                 model=self.agents['chatgpt'].model,
                 messages=[
-                    {"role": "system", "content": "You are a technical plan integrator that improves plans based on multi-agent feedback."},
+                    {"role": "system", "content": "You are a technical plan integrator with strong judgment capabilities. You evaluate multi-agent feedback, identify synergies and conflicts, and selectively integrate the most valuable suggestions."},
                     {"role": "user", "content": integration_prompt}
                 ],
                 temperature=0.3,  # Lower temperature for more consistent integration

@@ -214,11 +214,14 @@ docker run -v $(pwd)/ai:/app/ai --env-file config.env iterative-ai-council
    - Copilot reviews the current plan → checks code feasibility, phase appropriateness
    - Each agent writes their review to `02-04_review_*.md`
 
-   **Step B: Feedback Integration** 
-   - **ChatGPT acts as integrator**: Takes original plan + all agent feedback
-   - **Updates the plan content** based on suggestions (not just appending!)
-   - Addresses concerns, improves clarity, adds missing details
-   - Writes updated plan back to `01_plan.md`
+   **Step B: Feedback Integration with Judgment**
+   - **ChatGPT acts as integrator with judgment**: Takes original plan + all agent feedback
+   - **Evaluates each piece of feedback** for quality, relevance, and actionability
+   - **Identifies synergies**: When multiple agents mention similar concerns, prioritizes those
+   - **Resolves conflicts**: When agents disagree, makes judgment calls based on expertise domain
+   - **Selectively integrates** only valuable feedback that improves the plan
+   - **Updates the plan content** based on selected feedback (not just appending!)
+   - Writes updated plan back to `01_plan.md` with integration notes
 
    **Step C: Convergence Check**
    - Analyzes agent reviews for approval signals vs. concerns
@@ -232,8 +235,27 @@ docker run -v $(pwd)/ai:/app/ai --env-file config.env iterative-ai-council
 
 **Key Point:** The plan content actually changes each iteration based on agent feedback. This is true iterative refinement, not just review collection.
 
+**Intelligent Judgment Process:**
+
+The integrator doesn't blindly accept all feedback. It uses judgment to:
+
+1. **Quality Filter**: Evaluates if feedback is specific and actionable vs. vague
+2. **Synergy Detection**: When multiple agents flag the same issue, it gets priority
+3. **Conflict Resolution**: When agents disagree (e.g., "add more detail" vs. "too complex"), the integrator:
+   - Considers which agent's expertise is most relevant
+   - Makes balanced judgment calls
+   - Documents reasoning in integration notes
+4. **Selective Integration**: Only includes feedback that genuinely improves the plan
+
+**Example:**
+- ChatGPT: "Add authentication details"
+- Claude: "Need OAuth2 security specs"  
+- Copilot: "JWT implementation feasible"
+- **Integration**: All three align → High priority, all integrated
+- But if Claude says "use OAuth2" and Copilot says "OAuth2 too complex for Phase 1" → Integrator judges based on phase scope
+
 **Important Note - Mock Mode vs Real Mode:**
-- **With API Keys (Real Mode):** ChatGPT intelligently integrates feedback into plan content
+- **With API Keys (Real Mode):** ChatGPT intelligently integrates feedback with judgment
 - **Without API Keys (Mock Mode):** System appends feedback for demonstration purposes
 - Configure `OPENAI_KEY` and `CLAUDE_KEY` for full AI-driven integration
 
