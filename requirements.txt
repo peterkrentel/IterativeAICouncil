@@ -1,0 +1,11 @@
+# Core dependencies for IterativeAICouncil
+# Python 3.11+
+
+# OpenAI API client
+openai>=1.0.0
+
+# Anthropic (Claude) API client
+anthropic>=0.18.0
+
+# Additional utilities
+python-dotenv>=1.0.0
