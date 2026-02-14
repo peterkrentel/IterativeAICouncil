@@ -48,8 +48,10 @@ Thumbs.db
 htmlcov/
 .tox/
 
-# Documentation
-*.md
+# Documentation (exclude from container, mount as needed)
+# Main README and QUICKSTART are for development/deployment
+README.md
+QUICKSTART.md
 LICENSE
 
 # Config files (should be mounted at runtime)
