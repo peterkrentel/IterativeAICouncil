@@ -110,6 +110,19 @@ class Orchestrator:
         
         return reviews
     
+    def _is_ai_integration_available(self) -> bool:
+        """
+        Check if AI-driven feedback integration is available.
+        
+        Returns:
+            True if ChatGPT client is configured and ready for integration
+        """
+        return (
+            'chatgpt' in self.agents and 
+            hasattr(self.agents['chatgpt'], 'client') and 
+            self.agents['chatgpt'].client is not None
+        )
+    
     def merge_feedback(self, plan: str, reviews: Dict[str, str]) -> str:
         """
         Merge feedback from all agents into updated plan.
@@ -125,7 +138,7 @@ class Orchestrator:
             Updated plan with feedback integrated
         """
         # If no ChatGPT agent available, fall back to simple append
-        if 'chatgpt' not in self.agents or not hasattr(self.agents['chatgpt'], 'client') or not self.agents['chatgpt'].client:
+        if not self._is_ai_integration_available():
             return self._simple_merge_feedback(plan, reviews)
         
         # Build comprehensive feedback summary
@@ -160,7 +173,7 @@ Updated Plan:"""
                     {"role": "user", "content": integration_prompt}
                 ],
                 temperature=0.3,  # Lower temperature for more consistent integration
-                max_tokens=4000
+                max_tokens=min(8000, max(4000, len(plan) * 2))  # Dynamic limit based on plan size
             )
             
             updated_plan = response.choices[0].message.content
@@ -304,7 +317,7 @@ Updated Plan:"""
             
             # Merge feedback into plan
             print("\n" + "─" * 60)
-            if 'chatgpt' not in self.agents or not hasattr(self.agents['chatgpt'], 'client') or not self.agents['chatgpt'].client:
+            if not self._is_ai_integration_available():
                 print("Integrating feedback (mock mode - feedback appended)...")
                 print("ℹ Configure OPENAI_KEY for AI-driven plan integration")
             else:
