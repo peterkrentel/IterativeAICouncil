@@ -9,9 +9,9 @@ Agent that uses OpenAI's GPT API to review and refine plans.
 import os
 from typing import Optional
 try:
-    import openai
+    from openai import OpenAI
 except ImportError:
-    openai = None
+    OpenAI = None
 
 
 class ChatGPTAgent:
@@ -27,12 +27,12 @@ class ChatGPTAgent:
         """
         self.api_key = api_key or os.getenv("OPENAI_KEY")
         self.model = model
+        self.client = None
         
         if not self.api_key:
             print("Warning: OPENAI_KEY not set. ChatGPT agent will run in mock mode.")
-        
-        if openai and self.api_key:
-            openai.api_key = self.api_key
+        elif OpenAI:
+            self.client = OpenAI(api_key=self.api_key)
     
     def review_plan(self, plan: str, iteration: int) -> str:
         """
@@ -45,15 +45,15 @@ class ChatGPTAgent:
         Returns:
             Review feedback as markdown text
         """
-        if not self.api_key or not openai:
+        if not self.client:
             return self._mock_review(plan, iteration)
         
         try:
             # Construct review prompt
             prompt = self._build_prompt(plan, iteration)
             
-            # Call OpenAI API
-            response = openai.ChatCompletion.create(
+            # Call OpenAI API (v1.0.0+ interface)
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": self._get_system_prompt()},

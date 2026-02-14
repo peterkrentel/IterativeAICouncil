@@ -18,14 +18,14 @@ class CopilotAgent:
     # Configuration constants
     MAX_FUTURE_ITEMS_DISPLAYED = 5  # Maximum number of future phase items to display
     
-    def __init__(self, phase: str = "1"):
+    def __init__(self, phase: Optional[str] = None):
         """
         Initialize the Copilot agent.
         
         Args:
-            phase: Current phase number (default: "1")
+            phase: Current phase number (defaults to CURRENT_PHASE env var or "1")
         """
-        self.current_phase = phase
+        self.current_phase = phase or os.getenv("CURRENT_PHASE", "1")
     
     def review_plan(self, plan: str, iteration: int) -> str:
         """
