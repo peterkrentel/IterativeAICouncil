@@ -232,6 +232,11 @@ docker run -v $(pwd)/ai:/app/ai --env-file config.env iterative-ai-council
 
 **Key Point:** The plan content actually changes each iteration based on agent feedback. This is true iterative refinement, not just review collection.
 
+**Important Note - Mock Mode vs Real Mode:**
+- **With API Keys (Real Mode):** ChatGPT intelligently integrates feedback into plan content
+- **Without API Keys (Mock Mode):** System appends feedback for demonstration purposes
+- Configure `OPENAI_KEY` and `CLAUDE_KEY` for full AI-driven integration
+
 ---
 
 ## Agent Implementation Notes
