@@ -24,16 +24,21 @@ from copilot_agent import CopilotAgent
 class Orchestrator:
     """Main orchestrator for multi-LLM iterative plan refinement."""
     
-    def __init__(self, ai_dir: str = "./ai", max_iterations: int = 5):
+    # Configuration constants
+    CONVERGENCE_THRESHOLD = 0.6  # Fraction of agents that must approve for convergence
+    
+    def __init__(self, ai_dir: str = "./ai", max_iterations: int = 5, convergence_threshold: float = CONVERGENCE_THRESHOLD):
         """
         Initialize the orchestrator.
         
         Args:
             ai_dir: Directory containing plan and review files
             max_iterations: Maximum number of refinement iterations
+            convergence_threshold: Fraction of agents required for convergence (default: 0.6)
         """
         self.ai_dir = Path(ai_dir)
         self.max_iterations = max_iterations
+        self.convergence_threshold = convergence_threshold
         
         # Initialize agents
         self.agents = {
@@ -154,8 +159,8 @@ class Orchestrator:
             if any(keyword in review_lower for keyword in convergence_keywords):
                 converged_count += 1
         
-        # Consider converged if majority of agents approve
-        return converged_count >= len(reviews) * 0.6
+        # Consider converged if threshold of agents approve
+        return converged_count >= len(reviews) * self.convergence_threshold
     
     def run(self) -> None:
         """
@@ -226,9 +231,14 @@ def main():
     # Configuration from environment or defaults
     ai_dir = os.getenv("AI_DIR", "./ai")
     max_iterations = int(os.getenv("MAX_ITERATIONS", "5"))
+    convergence_threshold = float(os.getenv("CONVERGENCE_THRESHOLD", "0.6"))
     
     # Create and run orchestrator
-    orchestrator = Orchestrator(ai_dir=ai_dir, max_iterations=max_iterations)
+    orchestrator = Orchestrator(
+        ai_dir=ai_dir, 
+        max_iterations=max_iterations,
+        convergence_threshold=convergence_threshold
+    )
     orchestrator.run()
 
 

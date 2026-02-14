@@ -15,6 +15,9 @@ import re
 class CopilotAgent:
     """Agent that performs code-level analysis and phase-aware validation."""
     
+    # Configuration constants
+    MAX_FUTURE_ITEMS_DISPLAYED = 5  # Maximum number of future phase items to display
+    
     def __init__(self, phase: str = "1"):
         """
         Initialize the Copilot agent.
@@ -86,7 +89,7 @@ class CopilotAgent:
             return f"""**Current Phase:** {self.current_phase}
 
 Items that may belong in future phases:
-""" + "\n".join(f"- {item}" for item in future_items[:5])
+""" + "\n".join(f"- {item}" for item in future_items[:self.MAX_FUTURE_ITEMS_DISPLAYED])
         
         return f"""**Current Phase:** {self.current_phase}
 
