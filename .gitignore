@@ -20,3 +20,38 @@ rad.json
 *.flf
 #Test results file
 TestResults.xml
+
+### Python ###
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Sensitive configuration
+config.env
+.env
+*.key
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
