@@ -145,6 +145,8 @@ class Iteration:
         improvement_delta: Improvement from previous iteration (0-100)
         remaining_issues: List of remaining actionable issues
         human_choice: Human decision made ('a', 's', 'r', 'q')
+        human_override: Human override status ('accepted', 'rejected', or None)
+        notes: Optional notes from human review
         critic_statuses: Per-critic review status
         ship_it: True if all critics approved
         timestamp: ISO timestamp for this iteration
@@ -161,6 +163,8 @@ class Iteration:
     improvement_delta: float = 0.0
     remaining_issues: List[str] = field(default_factory=list)
     human_choice: str = ""
+    human_override: Optional[str] = None
+    notes: Optional[str] = None
     critic_statuses: Dict[str, str] = field(default_factory=dict)
     ship_it: bool = False
     timestamp: str = ""
@@ -180,6 +184,8 @@ class Iteration:
             'improvement_delta': self.improvement_delta,
             'remaining_issues': self.remaining_issues,
             'human_choice': self.human_choice,
+            'human_override': self.human_override,
+            'notes': self.notes,
             'critic_statuses': self.critic_statuses,
             'ship_it': self.ship_it,
             'timestamp': self.timestamp
@@ -220,6 +226,41 @@ class ConvergenceEngine:
         
         # Artifact
         self.artifact: Optional[Artifact] = None
+        
+        # Telemetry file path
+        self.telemetry_file = self.output_dir / "telemetry.jsonl"
+        
+    def _log_telemetry(self, iteration: 'Iteration') -> None:
+        """
+        Append iteration telemetry to JSONL log file.
+        
+        This is side-effect free - failures do not block convergence.
+        
+        Args:
+            iteration: Iteration object to log
+        """
+        try:
+            telemetry_entry = {
+                'iteration': iteration.iteration_number,
+                'agent_initiator': iteration.proposer,
+                'agent_responses': {critic: iteration.critic_statuses.get(critic, 'UNKNOWN') 
+                                   for critic in iteration.critics},
+                'applied_critiques': [c.to_dict() for c in iteration.applied_critiques],
+                'improvement_delta': iteration.improvement_delta,
+                'remaining_issues': iteration.remaining_issues,
+                'ship_it': iteration.ship_it,
+                'human_override': iteration.human_override,
+                'notes': iteration.notes,
+                'timestamp': iteration.timestamp
+            }
+            
+            # Append to JSONL file
+            with open(self.telemetry_file, 'a') as f:
+                f.write(json.dumps(telemetry_entry) + '\n')
+                
+        except Exception as e:
+            # Log error but don't block convergence
+            print(f"⚠ Telemetry logging failed (non-blocking): {e}")
         
     # STATE 0: Load artifact from CLI
     def load_artifact(self, input_file: str) -> Artifact:
@@ -772,6 +813,10 @@ class ConvergenceEngine:
         critique_file.write_text(json.dumps(all_critiques, indent=2))
         print(f"✓ Critique history: {critique_file}")
         
+        # Telemetry file
+        if self.telemetry_file.exists():
+            print(f"✓ Telemetry log (JSONL): {self.telemetry_file}")
+        
         print(f"✓ Diff history: {self.diff_dir}/")
     
     # Main convergence loop
@@ -846,15 +891,28 @@ class ConvergenceEngine:
             iteration.rejected_critiques = rejected
             iteration.human_choice = human_choice
             
+            # Set human_override field based on decision
+            if human_choice == 'a':
+                iteration.human_override = 'accepted'
+            elif human_choice == 'r':
+                iteration.human_override = 'rejected'
+            elif human_choice == 'q':
+                iteration.human_override = 'rejected'  # User quit, treated as rejection
+            else:  # 's' for selective
+                iteration.human_override = 'accepted' if approved else 'rejected'
+            
             # Log human decision
             print(f"\n📝 Human Decision Logged:")
             print(f"  Choice: {human_choice}")
             print(f"  Applied: {len(approved)} critique(s)")
             print(f"  Rejected: {len(rejected)} critique(s)")
+            print(f"  Override: {iteration.human_override}")
             
             if should_stop:
                 print("\nStopping by user request.")
                 self.iterations.append(iteration)
+                # Log telemetry before stopping
+                self._log_telemetry(iteration)
                 break
             
             # STATE 5: Apply critiques
@@ -898,6 +956,9 @@ class ConvergenceEngine:
             print(f"Improvement delta: {iteration.improvement_delta:+.1f}")
             
             self.iterations.append(iteration)
+            
+            # Log telemetry after iteration is complete
+            self._log_telemetry(iteration)
             
             # Anti-loop protection: Check for minimal improvement
             if (len(self.iterations) >= 2 and 
