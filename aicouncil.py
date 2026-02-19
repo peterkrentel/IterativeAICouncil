@@ -91,6 +91,13 @@ class Critique:
         # Check description similarity (simple word overlap)
         words1 = set(self.description.lower().split())
         words2 = set(other.description.lower().split())
+        
+        # Handle empty descriptions
+        if not words1 and not words2:
+            return True  # Both empty, consider duplicates
+        if not words1 or not words2:
+            return False  # One empty, one not - not duplicates
+        
         overlap = len(words1 & words2) / max(len(words1), len(words2))
         return overlap > 0.7
 
@@ -364,7 +371,8 @@ class ConvergenceEngine:
             
             choice = input("  Apply this critique? [y/n/q]: ").strip().lower()
             if choice == 'q':
-                rejected.extend(critiques[i-1:])
+                # User quit - reject remaining critiques (starting from current index i)
+                rejected.extend(critiques[i:])
                 return approved, rejected, True
             elif choice == 'y':
                 approved.append(critique)
