@@ -74,6 +74,17 @@ class Critique:
     description: str
     suggested_change: str
     
+    def __post_init__(self):
+        """Validate critique fields after initialization."""
+        # Validate severity is in range 1-5
+        if not isinstance(self.severity, int) or not (1 <= self.severity <= 5):
+            raise ValueError(f"Critique severity must be an integer between 1 and 5, got: {self.severity}")
+        
+        # Validate category is valid
+        valid_categories = ['architecture', 'performance', 'security', 'simplicity', 'bug-risk', 'style']
+        if self.category not in valid_categories:
+            raise ValueError(f"Critique category must be one of {valid_categories}, got: {self.category}")
+    
     def to_dict(self) -> Dict:
         """Convert critique to dictionary."""
         return asdict(self)
@@ -417,14 +428,15 @@ class ConvergenceEngine:
     
     # STATE 6: Convergence check
     def check_convergence(self, critiques: List[Critique], artifact: Artifact, 
-                          previous_content: str) -> Tuple[bool, float, str]:
+                          previous_content: str, diff_ratio: Optional[float] = None) -> Tuple[bool, float, str]:
         """
         Check if convergence has been achieved.
         
         Args:
-            critiques: Remaining/rejected critiques
+            critiques: Remaining/unapplied critiques
             artifact: Current artifact
             previous_content: Previous artifact content
+            diff_ratio: Pre-calculated diff ratio (optional, will calculate if not provided)
             
         Returns:
             Tuple of (has_converged, convergence_score, reason)
@@ -440,7 +452,8 @@ class ConvergenceEngine:
         print(f"High-severity critiques remaining: {len(high_severity_remaining)}")
         
         # Check 2: Structural diff < 5%
-        diff_ratio = self._calculate_diff_ratio(previous_content, artifact.content)
+        if diff_ratio is None:
+            diff_ratio = self._calculate_diff_ratio(previous_content, artifact.content)
         small_diff = diff_ratio < 0.05
         
         print(f"Structural diff: {diff_ratio*100:.2f}%")
@@ -450,7 +463,8 @@ class ConvergenceEngine:
         
         print(f"Iteration: {self.current_iteration}/{self.max_iterations}")
         
-        # Calculate convergence score
+        # Calculate convergence score (0.0 - 1.0)
+        # 0.5 for no high severity, 0.3 for small diff, 0.2 scaled by similarity
         convergence_score = 0.0
         if no_high_severity:
             convergence_score += 0.5
@@ -464,10 +478,13 @@ class ConvergenceEngine:
         has_converged = False
         reason = ""
         
-        if no_high_severity and small_diff:
-            has_converged = True
-            reason = "No high-severity critiques and minimal changes"
-        elif max_iterations_reached:
+        # Require at least one full iteration before convergence
+        if self.current_iteration >= 1:
+            if no_high_severity and small_diff:
+                has_converged = True
+                reason = "No high-severity critiques and minimal changes"
+        
+        if max_iterations_reached:
             has_converged = True
             reason = f"Maximum iterations ({self.max_iterations}) reached"
         
@@ -480,8 +497,15 @@ class ConvergenceEngine:
     
     def _calculate_diff_ratio(self, old_content: str, new_content: str) -> float:
         """Calculate the ratio of changes between two strings."""
+        # Handle edge case: both empty or None
+        if not old_content and not new_content:
+            return 0.0
         if not old_content or not new_content:
             return 1.0
+        
+        # Handle edge case: identical content
+        if old_content == new_content:
+            return 0.0
         
         diff = list(difflib.unified_diff(
             old_content.splitlines(keepends=True),
@@ -489,8 +513,10 @@ class ConvergenceEngine:
             lineterm=''
         ))
         
-        # Count changed lines
-        changed_lines = sum(1 for line in diff if line.startswith('+') or line.startswith('-'))
+        # Count only actual content changes (lines starting with + or - but not +++ or ---)
+        changed_lines = sum(1 for line in diff 
+                          if (line.startswith('+') and not line.startswith('+++')) or 
+                             (line.startswith('-') and not line.startswith('---')))
         total_lines = max(len(old_content.splitlines()), len(new_content.splitlines()))
         
         if total_lines == 0:
@@ -524,11 +550,12 @@ class ConvergenceEngine:
             final_file.write_text(self.artifact.content)
             print(f"✓ Final artifact: {final_file}")
         
-        # Save iteration log
+        # Save iteration log with enhanced traceability
         iteration_log = {
             'iterations': [it.to_dict() for it in self.iterations],
             'total_iterations': len(self.iterations),
-            'final_version': self.artifact.version if self.artifact else 0
+            'final_version': self.artifact.version if self.artifact else 0,
+            'artifact_history': self.artifact.history if self.artifact else []
         }
         log_file = self.output_dir / "iteration_log.json"
         log_file.write_text(json.dumps(iteration_log, indent=2))
@@ -598,11 +625,13 @@ class ConvergenceEngine:
             revised_content = self.run_proposer(proposer, artifact, iteration_num)
             
             # Temporarily update artifact for critics to review
+            # Use deep copy of history to prevent mutation
+            import copy
             temp_artifact = Artifact(
                 id=artifact.id,
                 version=artifact.version,
                 content=revised_content,
-                history=artifact.history.copy()
+                history=copy.deepcopy(artifact.history)
             )
             
             # STATE 2: Run critics
@@ -630,18 +659,22 @@ class ConvergenceEngine:
                 # No critiques applied, use revised content as-is
                 final_content = revised_content
             
-            # Update artifact
-            artifact.content = final_content
-            artifact.version += 1
+            # Update artifact using apply_change to maintain history consistency
+            change_description = f"Iteration {iteration_num}: Proposer={proposer}, Applied {len(approved)} critique(s)"
+            artifact.apply_change(change_description, final_content)
+            
+            # Calculate diff once for both saving and convergence check
+            diff_ratio = self._calculate_diff_ratio(previous_content, artifact.content)
             
             # Save diff
             self.save_diff(iteration_num, previous_content, artifact.content)
-            diff_ratio = self._calculate_diff_ratio(previous_content, artifact.content)
             iteration.diff_summary = f"Changed {diff_ratio*100:.2f}% of content"
             
             # STATE 6: Check convergence
+            # Check all critiques that weren't applied (both rejected and high-severity ones)
+            unapplied_critiques = rejected
             has_converged, score, reason = self.check_convergence(
-                rejected, artifact, previous_content
+                unapplied_critiques, artifact, previous_content, diff_ratio
             )
             iteration.convergence_score = score
             
@@ -769,8 +802,14 @@ Examples:
         # Parse models
         models = [m.strip() for m in args.models.split(',')]
         
+        # Validate models
         if len(models) < 2:
             print("Error: At least 2 models required (1 proposer + 1 critic minimum)")
+            sys.exit(1)
+        
+        # Check for duplicate models
+        if len(models) != len(set(models)):
+            print("Error: Duplicate model names detected. Each model must be unique.")
             sys.exit(1)
         
         # Create engine and run
