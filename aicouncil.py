@@ -95,7 +95,20 @@ class Critique:
         return Critique(**data)
     
     def is_duplicate(self, other: 'Critique') -> bool:
-        """Check if this critique is similar to another (for deduplication)."""
+        """
+        Check if this critique is similar to another (for deduplication).
+        
+        Uses a simple heuristic: 70% word overlap for descriptions in the same category.
+        
+        NOTE: Future improvement - Use semantic similarity (embeddings) for better deduplication.
+        The current word-overlap approach is an MVP heuristic that works for most cases.
+        
+        Args:
+            other: Another critique to compare against
+            
+        Returns:
+            True if critiques are considered duplicates
+        """
         # Simple similarity check: same category, similar description
         if self.category != other.category:
             return False
@@ -109,6 +122,7 @@ class Critique:
         if not words1 or not words2:
             return False  # One empty, one not - not duplicates
         
+        # 70% overlap threshold (tuned for MVP)
         overlap = len(words1 & words2) / max(len(words1), len(words2))
         return overlap > 0.7
 
@@ -127,6 +141,8 @@ class Iteration:
         rejected_critiques: Critiques that were rejected
         diff_summary: Summary of changes made
         convergence_score: Convergence score (0-1)
+        human_choice: Human decision made ('a', 's', 'r', 'q')
+        critic_statuses: Per-critic review status
     """
     iteration_number: int
     proposer: str
@@ -136,6 +152,8 @@ class Iteration:
     rejected_critiques: List[Critique] = field(default_factory=list)
     diff_summary: str = ""
     convergence_score: float = 0.0
+    human_choice: str = ""
+    critic_statuses: Dict[str, str] = field(default_factory=dict)
     
     def to_dict(self) -> Dict:
         """Convert iteration to dictionary."""
@@ -147,7 +165,9 @@ class Iteration:
             'applied_critiques': [c.to_dict() for c in self.applied_critiques],
             'rejected_critiques': [c.to_dict() for c in self.rejected_critiques],
             'diff_summary': self.diff_summary,
-            'convergence_score': self.convergence_score
+            'convergence_score': self.convergence_score,
+            'human_choice': self.human_choice,
+            'critic_statuses': self.critic_statuses
         }
 
 
@@ -160,11 +180,16 @@ class ConvergenceEngine:
         """
         Initialize the convergence engine.
         
+        Ensures deterministic model rotation and critic assignment.
+        
         Args:
-            models: List of model names to use
+            models: List of model names to use (minimum 2 required)
             max_iterations: Maximum number of iterations (default: 5)
             output_dir: Directory for output files
         """
+        # Assert minimum 2 models required
+        assert len(models) >= 2, "At least 2 models required (1 proposer + 1 critic minimum)"
+        
         self.models = models
         self.max_iterations = max_iterations
         self.output_dir = Path(output_dir)
@@ -220,7 +245,7 @@ class ConvergenceEngine:
     # STATE 1: Proposer generates revised artifact
     def run_proposer(self, proposer: str, artifact: Artifact, iteration_num: int) -> str:
         """
-        Run proposer model to generate revised artifact.
+        Run proposer model to generate revised artifact with error handling.
         
         Args:
             proposer: Name of the proposer model
@@ -235,18 +260,21 @@ class ConvergenceEngine:
         print(f"{'='*60}")
         print(f"Proposer: {proposer}")
         
-        # Placeholder for LLM API call
-        revised_content = self._call_proposer_llm(proposer, artifact, iteration_num)
-        
-        print(f"✓ Proposer generated revision")
-        print(f"  Content length: {len(revised_content)} characters")
-        
-        return revised_content
+        # Call LLM with error handling
+        try:
+            revised_content = self._call_proposer_llm(proposer, artifact, iteration_num)
+            print(f"✓ Proposer generated revision")
+            print(f"  Content length: {len(revised_content)} characters")
+            return revised_content
+        except Exception as e:
+            print(f"✗ Error calling proposer LLM: {e}")
+            print(f"  Falling back to original content")
+            return artifact.content
     
     # STATE 2: Critics run in parallel
     def run_critics(self, critics: List[str], artifact: Artifact, iteration_num: int) -> List[Critique]:
         """
-        Run critic models in parallel to generate critiques.
+        Run critic models to generate critiques with error handling.
         
         Args:
             critics: List of critic model names
@@ -254,7 +282,7 @@ class ConvergenceEngine:
             iteration_num: Current iteration number
             
         Returns:
-            List of critiques from all critics
+            List of critiques from all critics (empty list from failed critics)
         """
         print(f"\n{'='*60}")
         print(f"STATE 2: Running Critics (Iteration {iteration_num})")
@@ -266,9 +294,16 @@ class ConvergenceEngine:
         # In a real implementation, these would run in parallel
         for critic in critics:
             print(f"\n  Running {critic}...")
-            critiques = self._call_critic_llm(critic, artifact, iteration_num)
-            all_critiques.extend(critiques)
-            print(f"  ✓ {critic} returned {len(critiques)} critique(s)")
+            try:
+                critiques = self._call_critic_llm(critic, artifact, iteration_num)
+                all_critiques.extend(critiques)
+                print(f"  ✓ {critic} returned {len(critiques)} critique(s)")
+            except Exception as e:
+                print(f"  ✗ {critic} failed: {e}")
+                print(f"  ℹ Continuing without critiques from {critic}")
+        
+        print(f"\n✓ Total critiques received: {len(all_critiques)}")
+        return all_critiques
         
         print(f"\n✓ Total critiques received: {len(all_critiques)}")
         return all_critiques
@@ -314,15 +349,15 @@ class ConvergenceEngine:
         return unique_critiques
     
     # STATE 4: Human gate
-    def human_approval_gate(self, critiques: List[Critique]) -> Tuple[List[Critique], List[Critique], bool]:
+    def human_approval_gate(self, critiques: List[Critique]) -> Tuple[List[Critique], List[Critique], bool, str]:
         """
-        Display critiques and prompt for human approval.
+        Display critiques and prompt for human approval with input validation.
         
         Args:
             critiques: List of consolidated critiques
             
         Returns:
-            Tuple of (approved_critiques, rejected_critiques, should_stop)
+            Tuple of (approved_critiques, rejected_critiques, should_stop, human_choice)
         """
         print(f"\n{'='*60}")
         print("STATE 4: Human Approval Gate")
@@ -330,7 +365,7 @@ class ConvergenceEngine:
         
         if not critiques:
             print("No critiques to review.")
-            return [], [], False
+            return [], [], False, 'n'
         
         # Display critiques
         print(f"\nReceived {len(critiques)} critique(s):\n")
@@ -346,41 +381,66 @@ class ConvergenceEngine:
         if high_severity:
             print(f"⚠ {len(high_severity)} high-severity critique(s) (severity ≥3)")
         
-        # Prompt for approval
+        # Prompt for approval with validation loop
         print("\nOptions:")
         print("  a - Apply all critiques")
         print("  s - Selective apply (choose which to apply)")
         print("  r - Reject all critiques")
         print("  q - Stop iteration (quit)")
         
-        choice = input("\nYour choice [a/s/r/q]: ").strip().lower()
+        valid_choices = ['a', 's', 'r', 'q']
+        choice = None
+        
+        while choice not in valid_choices:
+            user_input = input("\nYour choice [a/s/r/q]: ").strip().lower()
+            if user_input in valid_choices:
+                choice = user_input
+            else:
+                print(f"❌ Invalid input '{user_input}'. Please enter one of: a, s, r, q")
         
         if choice == 'q':
             print("Stopping iteration by user request.")
-            return [], critiques, True
+            return [], critiques, True, choice
         elif choice == 'a':
             print(f"Applying all {len(critiques)} critique(s).")
-            return critiques, [], False
+            return critiques, [], False, choice
         elif choice == 'r':
             print(f"Rejecting all {len(critiques)} critique(s).")
-            return [], critiques, False
+            return [], critiques, False, choice
         elif choice == 's':
-            return self._selective_apply(critiques)
-        else:
-            print("Invalid choice. Defaulting to selective apply.")
-            return self._selective_apply(critiques)
+            approved, rejected, should_stop = self._selective_apply(critiques)
+            return approved, rejected, should_stop, choice
+        
+        # Should never reach here due to validation loop
+        return [], critiques, False, choice
     
     def _selective_apply(self, critiques: List[Critique]) -> Tuple[List[Critique], List[Critique], bool]:
-        """Helper for selective critique application."""
+        """
+        Helper for selective critique application with input validation.
+        
+        Args:
+            critiques: List of critiques to review
+            
+        Returns:
+            Tuple of (approved, rejected, should_stop)
+        """
         approved = []
         rejected = []
+        valid_choices = ['y', 'n', 'q']
         
         for i, critique in enumerate(critiques, 1):
             print(f"\nCritique {i}/{len(critiques)}:")
             print(f"  [{critique.severity}/5] {critique.category} - {critique.critic}")
             print(f"  {critique.description}")
             
-            choice = input("  Apply this critique? [y/n/q]: ").strip().lower()
+            choice = None
+            while choice not in valid_choices:
+                user_input = input("  Apply this critique? [y/n/q]: ").strip().lower()
+                if user_input in valid_choices:
+                    choice = user_input
+                else:
+                    print(f"  ❌ Invalid input '{user_input}'. Please enter: y, n, or q")
+            
             if choice == 'q':
                 # User quit - reject remaining critiques (starting from current index i)
                 rejected.extend(critiques[i:])
@@ -428,49 +488,85 @@ class ConvergenceEngine:
     
     # STATE 6: Convergence check
     def check_convergence(self, critiques: List[Critique], artifact: Artifact, 
-                          previous_content: str, diff_ratio: Optional[float] = None) -> Tuple[bool, float, str]:
+                          previous_content: str, diff_ratio: Optional[float] = None,
+                          critics: Optional[List[str]] = None) -> Tuple[bool, float, str, Dict[str, str]]:
         """
-        Check if convergence has been achieved.
+        Check if convergence has been achieved based on per-critic review status.
+        
+        Convergence logic:
+        - All critics are APPROVED → signal "ship it"
+        - Optional: All critics are TIGHTEN_ONLY → may require human confirmation
+        - Otherwise continue iteration
+        
+        Critic review statuses:
+        - REJECT_STRUCTURAL: Severe structural issues (severity 5)
+        - REJECT_MODERATE: Moderate issues (severity 3-4)
+        - TIGHTEN_ONLY: Minor issues only (severity 1-2)
+        - APPROVED: No critiques from this critic
         
         Args:
             critiques: Remaining/unapplied critiques
             artifact: Current artifact
             previous_content: Previous artifact content
             diff_ratio: Pre-calculated diff ratio (optional, will calculate if not provided)
+            critics: List of critic names to assess
             
         Returns:
-            Tuple of (has_converged, convergence_score, reason)
+            Tuple of (has_converged, convergence_score, reason, critic_statuses)
         """
         print(f"\n{'='*60}")
         print("STATE 6: Convergence Check")
         print(f"{'='*60}")
         
-        # Check 1: No high-severity critiques remain
-        high_severity_remaining = [c for c in critiques if c.severity >= 3]
-        no_high_severity = len(high_severity_remaining) == 0
+        # Calculate per-critic review status
+        critic_statuses = {}
+        if critics:
+            for critic in critics:
+                critic_critiques = [c for c in critiques if c.critic == critic]
+                
+                if not critic_critiques:
+                    critic_statuses[critic] = 'APPROVED'
+                else:
+                    max_severity = max(c.severity for c in critic_critiques)
+                    if max_severity >= 5:
+                        critic_statuses[critic] = 'REJECT_STRUCTURAL'
+                    elif max_severity >= 3:
+                        critic_statuses[critic] = 'REJECT_MODERATE'
+                    else:
+                        critic_statuses[critic] = 'TIGHTEN_ONLY'
         
-        print(f"High-severity critiques remaining: {len(high_severity_remaining)}")
+        # Display critic statuses
+        print("\nPer-Critic Review Status:")
+        for critic, status in critic_statuses.items():
+            print(f"  {critic}: {status}")
         
-        # Check 2: Structural diff < 5%
+        # Check 1: All critics approved
+        all_approved = all(status == 'APPROVED' for status in critic_statuses.values())
+        all_tighten_only = all(status in ['APPROVED', 'TIGHTEN_ONLY'] for status in critic_statuses.values())
+        
+        # Check 2: Structural diff (for informational purposes)
         if diff_ratio is None:
             diff_ratio = self._calculate_diff_ratio(previous_content, artifact.content)
-        small_diff = diff_ratio < 0.05
         
-        print(f"Structural diff: {diff_ratio*100:.2f}%")
+        print(f"\nStructural diff: {diff_ratio*100:.2f}%")
         
         # Check 3: Max iterations reached
         max_iterations_reached = self.current_iteration >= self.max_iterations
         
         print(f"Iteration: {self.current_iteration}/{self.max_iterations}")
         
-        # Calculate convergence score (0.0 - 1.0)
-        # 0.5 for no high severity, 0.3 for small diff, 0.2 scaled by similarity
+        # Calculate convergence score (0.0 - 1.0) based on critic statuses
         convergence_score = 0.0
-        if no_high_severity:
-            convergence_score += 0.5
-        if small_diff:
-            convergence_score += 0.3
-        convergence_score += min(0.2, (1 - diff_ratio) * 0.2)
+        if all_approved:
+            convergence_score = 1.0
+        elif all_tighten_only:
+            convergence_score = 0.8
+        else:
+            # Calculate based on status distribution
+            approved_count = sum(1 for s in critic_statuses.values() if s == 'APPROVED')
+            tighten_count = sum(1 for s in critic_statuses.values() if s == 'TIGHTEN_ONLY')
+            total_critics = len(critic_statuses) if critic_statuses else 1
+            convergence_score = (approved_count * 1.0 + tighten_count * 0.8) / total_critics
         
         print(f"Convergence score: {convergence_score:.2f}")
         
@@ -478,11 +574,15 @@ class ConvergenceEngine:
         has_converged = False
         reason = ""
         
-        # Require at least one full iteration before convergence
+        # Convergence criteria based on critic consensus
         if self.current_iteration >= 1:
-            if no_high_severity and small_diff:
+            if all_approved:
                 has_converged = True
-                reason = "No high-severity critiques and minimal changes"
+                reason = "All critics APPROVED - ship it!"
+            elif all_tighten_only and self.current_iteration >= 2:
+                # Allow convergence if all critics only have minor issues after 2+ iterations
+                has_converged = True
+                reason = "All critics at TIGHTEN_ONLY or better - acceptable quality"
         
         if max_iterations_reached:
             has_converged = True
@@ -493,7 +593,7 @@ class ConvergenceEngine:
         else:
             print(f"✗ Convergence not yet achieved. Continuing iteration.")
         
-        return has_converged, convergence_score, reason
+        return has_converged, convergence_score, reason, critic_statuses
     
     def _calculate_diff_ratio(self, old_content: str, new_content: str) -> float:
         """Calculate the ratio of changes between two strings."""
@@ -642,9 +742,16 @@ class ConvergenceEngine:
             consolidated_critiques = self.consolidate_critiques(critiques)
             
             # STATE 4: Human approval gate
-            approved, rejected, should_stop = self.human_approval_gate(consolidated_critiques)
+            approved, rejected, should_stop, human_choice = self.human_approval_gate(consolidated_critiques)
             iteration.applied_critiques = approved
             iteration.rejected_critiques = rejected
+            iteration.human_choice = human_choice
+            
+            # Log human decision
+            print(f"\n📝 Human Decision Logged:")
+            print(f"  Choice: {human_choice}")
+            print(f"  Applied: {len(approved)} critique(s)")
+            print(f"  Rejected: {len(rejected)} critique(s)")
             
             if should_stop:
                 print("\nStopping by user request.")
@@ -673,10 +780,11 @@ class ConvergenceEngine:
             # STATE 6: Check convergence
             # Check all critiques that weren't applied (both rejected and high-severity ones)
             unapplied_critiques = rejected
-            has_converged, score, reason = self.check_convergence(
-                unapplied_critiques, artifact, previous_content, diff_ratio
+            has_converged, score, reason, critic_statuses = self.check_convergence(
+                unapplied_critiques, artifact, previous_content, diff_ratio, critics
             )
             iteration.convergence_score = score
+            iteration.critic_statuses = critic_statuses
             
             self.iterations.append(iteration)
             
@@ -753,16 +861,50 @@ class ConvergenceEngine:
     
     def _apply_critiques_to_content(self, content: str, critiques: List[Critique]) -> str:
         """
-        Placeholder for applying critiques to content.
+        Apply critiques to content in a structured, deterministic manner.
         
-        In a real implementation, this would use an LLM to intelligently
-        apply the suggested changes to the content.
+        This is an MVP placeholder that transforms critiques into structured sections.
+        Groups critiques by category for organized presentation.
+        Real LLM-based text rewriting is NOT implemented here.
+        
+        Args:
+            content: Original content
+            critiques: List of critiques to apply
+            
+        Returns:
+            Content with structured critique application notes
         """
-        # Mock application: add notes about applied critiques
-        applied_notes = "\n\n<!-- Applied Critiques:\n"
+        if not critiques:
+            return content
+        
+        # Group critiques by category for structured output
+        by_category = {}
         for critique in critiques:
-            applied_notes += f"  - [{critique.severity}/5] {critique.category}: {critique.description}\n"
-        applied_notes += "-->\n"
+            if critique.category not in by_category:
+                by_category[critique.category] = []
+            by_category[critique.category].append(critique)
+        
+        # Build structured application notes deterministically
+        # Sort categories for consistent output
+        applied_notes = "\n\n<!-- Applied Critiques -->\n"
+        applied_notes += "<!-- \n"
+        
+        for category in sorted(by_category.keys()):
+            category_critiques = by_category[category]
+            applied_notes += f"\n{category.upper()} ({len(category_critiques)} critique(s)):\n"
+            
+            # Sort by severity (descending) then by description for determinism
+            sorted_critiques = sorted(category_critiques, 
+                                     key=lambda c: (-c.severity, c.description))
+            
+            for critique in sorted_critiques:
+                applied_notes += f"  [{critique.severity}/5] {critique.critic}:\n"
+                applied_notes += f"    Issue: {critique.description}\n"
+                applied_notes += f"    Change: {critique.suggested_change}\n"
+                if critique.location:
+                    applied_notes += f"    Location: {critique.location}\n"
+        
+        applied_notes += "\n-->\n"
         
         return content + applied_notes
 
