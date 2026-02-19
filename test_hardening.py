@@ -228,18 +228,19 @@ def test_critic_status_tracking():
     # claude has severity 2 (should be TIGHTEN_ONLY)
     
     critics = ['gpt', 'copilot', 'claude']
-    has_converged, score, reason, statuses, ship_it = engine.check_convergence(
+    has_converged, score, reason, statuses, ship_it, quality, issues = engine.check_convergence(
         critiques, artifact, 'old content', 0.02, critics
     )
     
     if (statuses.get('gpt') == 'APPROVED' and 
         statuses.get('copilot') == 'REJECT_STRUCTURAL' and 
         statuses.get('claude') == 'TIGHTEN_ONLY' and
-        not ship_it):  # ship_it should be False since not all approved
+        not ship_it and
+        quality < 100):  # Quality should be reduced due to issues
         print("   ✓ PASS: Critic statuses tracked correctly")
         return True
     else:
-        print(f"   ✗ FAIL: Incorrect statuses: {statuses}, ship_it={ship_it}")
+        print(f"   ✗ FAIL: Incorrect statuses: {statuses}, ship_it={ship_it}, quality={quality}")
         return False
 
 
@@ -254,15 +255,15 @@ def test_convergence_all_approved():
     artifact = Artifact(id='test', version=1, content='test content', history=[])
     
     # No critiques = all approved
-    has_converged, score, reason, statuses, ship_it = engine.check_convergence(
+    has_converged, score, reason, statuses, ship_it, quality, issues = engine.check_convergence(
         [], artifact, 'old content', 0.01, ['gpt', 'copilot']
     )
     
-    if has_converged and ship_it and 'ship it' in reason.lower():
-        print(f"   ✓ PASS: Converged with all approved (score={score:.2f}, ship_it={ship_it})")
+    if has_converged and ship_it and quality == 100 and len(issues) == 0:
+        print(f"   ✓ PASS: Converged with all approved (score={score:.2f}, ship_it={ship_it}, quality={quality})")
         return True
     else:
-        print(f"   ✗ FAIL: Should converge when all approved (ship_it={ship_it})")
+        print(f"   ✗ FAIL: Should converge when all approved (ship_it={ship_it}, quality={quality})")
         return False
 
 

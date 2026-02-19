@@ -55,9 +55,11 @@ def test_basic_workflow():
     
     # Test convergence check
     print("\n5. Testing convergence check...")
-    has_converged, score, reason, statuses, ship_it = engine.check_convergence([], artifact, artifact.content)
+    has_converged, score, reason, statuses, ship_it, quality_score, remaining_issues = engine.check_convergence([], artifact, artifact.content)
     print(f"   Convergence score: {score:.2f}")
+    print(f"   Quality score: {quality_score:.1f}")
     print(f"   Ship it: {ship_it}")
+    print(f"   Remaining issues: {len(remaining_issues)}")
     print(f"   ✓ Convergence check completed")
     
     # Test output saving

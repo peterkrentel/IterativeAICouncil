@@ -141,6 +141,9 @@ class Iteration:
         rejected_critiques: Critiques that were rejected
         diff_summary: Summary of changes made
         convergence_score: Convergence score (0-1)
+        quality_score: Quality score (0-100)
+        improvement_delta: Improvement from previous iteration (0-100)
+        remaining_issues: List of remaining actionable issues
         human_choice: Human decision made ('a', 's', 'r', 'q')
         critic_statuses: Per-critic review status
         ship_it: True if all critics approved
@@ -154,6 +157,9 @@ class Iteration:
     rejected_critiques: List[Critique] = field(default_factory=list)
     diff_summary: str = ""
     convergence_score: float = 0.0
+    quality_score: float = 0.0
+    improvement_delta: float = 0.0
+    remaining_issues: List[str] = field(default_factory=list)
     human_choice: str = ""
     critic_statuses: Dict[str, str] = field(default_factory=dict)
     ship_it: bool = False
@@ -170,6 +176,9 @@ class Iteration:
             'rejected_critiques': [c.to_dict() for c in self.rejected_critiques],
             'diff_summary': self.diff_summary,
             'convergence_score': self.convergence_score,
+            'quality_score': self.quality_score,
+            'improvement_delta': self.improvement_delta,
+            'remaining_issues': self.remaining_issues,
             'human_choice': self.human_choice,
             'critic_statuses': self.critic_statuses,
             'ship_it': self.ship_it,
@@ -495,7 +504,7 @@ class ConvergenceEngine:
     # STATE 6: Convergence check
     def check_convergence(self, critiques: List[Critique], artifact: Artifact, 
                           previous_content: str, diff_ratio: Optional[float] = None,
-                          critics: Optional[List[str]] = None) -> Tuple[bool, float, str, Dict[str, str], bool]:
+                          critics: Optional[List[str]] = None) -> Tuple[bool, float, str, Dict[str, str], bool, float, List[str]]:
         """
         Check if convergence has been achieved using multiple criteria.
         
@@ -503,6 +512,7 @@ class ConvergenceEngine:
         1. Traditional: No high-severity critiques + small diff ratio
         2. Consensus: Per-critic review status
         3. Ship-it flag: All critics APPROVED
+        4. Empty critiques: No actionable issues
         
         Critic review statuses:
         - REJECT_STRUCTURAL: Severe structural issues (severity 5)
@@ -518,7 +528,7 @@ class ConvergenceEngine:
             critics: List of critic names to assess
             
         Returns:
-            Tuple of (has_converged, convergence_score, reason, critic_statuses, ship_it)
+            Tuple of (has_converged, convergence_score, reason, critic_statuses, ship_it, quality_score, remaining_issues)
         """
         print(f"\n{'='*60}")
         print("STATE 6: Convergence Check")
@@ -552,11 +562,22 @@ class ConvergenceEngine:
         if ship_it:
             print(f"\n🚀 SHIP IT! All critics APPROVED")
         
+        # Build remaining issues list (actionable critiques only)
+        remaining_issues = []
+        for critique in critiques:
+            if critique.severity >= 3:  # Only include actionable issues (severity >= 3)
+                issue_desc = f"[{critique.category}] {critique.description}"
+                if critique.location:
+                    issue_desc += f" @ {critique.location}"
+                remaining_issues.append(issue_desc)
+        
+        print(f"\nActionable issues remaining: {len(remaining_issues)}")
+        
         # Check 1: Traditional high-severity check
         high_severity_remaining = [c for c in critiques if c.severity >= 3]
         no_high_severity = len(high_severity_remaining) == 0
         
-        print(f"\nHigh-severity critiques remaining: {len(high_severity_remaining)}")
+        print(f"High-severity critiques remaining: {len(high_severity_remaining)}")
         
         # Check 2: Structural diff < 5%
         if diff_ratio is None:
@@ -569,6 +590,9 @@ class ConvergenceEngine:
         max_iterations_reached = self.current_iteration >= self.max_iterations
         
         print(f"Iteration: {self.current_iteration}/{self.max_iterations}")
+        
+        # Check 4: Empty critiques (anti-loop protection)
+        no_critiques = len(critiques) == 0
         
         # Calculate convergence score (0.0 - 1.0) combining both approaches
         convergence_score = 0.0
@@ -596,25 +620,44 @@ class ConvergenceEngine:
         # Combined score
         convergence_score = (consensus_score * 0.6) + (traditional_score * 0.4)
         
+        # Calculate quality score (0-100 scale)
+        # Quality is inverse of remaining issues, weighted by severity
+        if not critiques:
+            quality_score = 100.0
+        else:
+            # Deduct points based on severity
+            total_deduction = sum(
+                20 if c.severity >= 5 else
+                10 if c.severity >= 3 else
+                3 if c.severity >= 2 else 1
+                for c in critiques
+            )
+            quality_score = max(0.0, 100.0 - total_deduction)
+        
         print(f"Convergence score: {convergence_score:.2f}")
+        print(f"Quality score: {quality_score:.1f}/100")
         
         # Determine convergence using multiple criteria
         has_converged = False
         reason = ""
         
-        # Priority 1: Ship it flag (strongest signal)
-        if self.current_iteration >= 1 and ship_it:
+        # Priority 1: Empty critiques (anti-loop protection)
+        if self.current_iteration >= 1 and no_critiques:
+            has_converged = True
+            reason = "No critiques received - converged"
+        # Priority 2: Ship it flag (strongest signal)
+        elif self.current_iteration >= 1 and ship_it:
             has_converged = True
             reason = "All critics APPROVED - ship it! 🚀"
-        # Priority 2: Traditional convergence (backward compatible)
+        # Priority 3: Traditional convergence (backward compatible)
         elif self.current_iteration >= 1 and no_high_severity and small_diff:
             has_converged = True
             reason = "No high-severity critiques and minimal changes"
-        # Priority 3: Consensus convergence (all tighten only after 2+ iterations)
+        # Priority 4: Consensus convergence (all tighten only after 2+ iterations)
         elif self.current_iteration >= 2 and all(status in ['APPROVED', 'TIGHTEN_ONLY'] for status in critic_statuses.values()):
             has_converged = True
             reason = "All critics at TIGHTEN_ONLY or better - acceptable quality"
-        # Priority 4: Max iterations (fallback)
+        # Priority 5: Max iterations (fallback)
         elif max_iterations_reached:
             has_converged = True
             reason = f"Maximum iterations ({self.max_iterations}) reached"
@@ -624,7 +667,7 @@ class ConvergenceEngine:
         else:
             print(f"✗ Convergence not yet achieved. Continuing iteration.")
         
-        return has_converged, convergence_score, reason, critic_statuses, ship_it
+        return has_converged, convergence_score, reason, critic_statuses, ship_it, quality_score, remaining_issues
     
     def _calculate_diff_ratio(self, old_content: str, new_content: str) -> float:
         """Calculate the ratio of changes between two strings."""
@@ -681,13 +724,37 @@ class ConvergenceEngine:
             final_file.write_text(self.artifact.content)
             print(f"✓ Final artifact: {final_file}")
         
-        # Save iteration log with enhanced traceability
+        # Determine final status
+        if not self.iterations:
+            final_status = "BLOCKED"
+        else:
+            last_iteration = self.iterations[-1]
+            if last_iteration.ship_it:
+                final_status = "CONVERGED"
+            elif self.current_iteration >= self.max_iterations:
+                final_status = "MAX_ITERATIONS"
+            elif len(last_iteration.remaining_issues) == 0:
+                final_status = "CONVERGED"
+            else:
+                final_status = "CONVERGED"
+        
+        # Save iteration log with enhanced convergence metrics
         iteration_log = {
             'iterations': [it.to_dict() for it in self.iterations],
             'total_iterations': len(self.iterations),
             'final_version': self.artifact.version if self.artifact else 0,
+            'final_status': final_status,
             'artifact_history': self.artifact.history if self.artifact else []
         }
+        
+        # Add final metrics if iterations exist
+        if self.iterations:
+            last_iter = self.iterations[-1]
+            iteration_log['iteration_count'] = len(self.iterations)
+            iteration_log['quality_score'] = last_iter.quality_score
+            iteration_log['improvement_delta'] = last_iter.improvement_delta
+            iteration_log['remaining_issues'] = last_iter.remaining_issues
+        
         log_file = self.output_dir / "iteration_log.json"
         log_file.write_text(json.dumps(iteration_log, indent=2))
         print(f"✓ Iteration log: {log_file}")
@@ -812,14 +879,33 @@ class ConvergenceEngine:
             # STATE 6: Check convergence
             # Check all critiques that weren't applied (both rejected and high-severity ones)
             unapplied_critiques = rejected
-            has_converged, score, reason, critic_statuses, ship_it = self.check_convergence(
+            has_converged, score, reason, critic_statuses, ship_it, quality_score, remaining_issues = self.check_convergence(
                 unapplied_critiques, artifact, previous_content, diff_ratio, critics
             )
             iteration.convergence_score = score
+            iteration.quality_score = quality_score
+            iteration.remaining_issues = remaining_issues
             iteration.critic_statuses = critic_statuses
             iteration.ship_it = ship_it
             
+            # Calculate improvement delta (quality improvement from previous iteration)
+            if self.iterations:
+                prev_quality = self.iterations[-1].quality_score
+                iteration.improvement_delta = quality_score - prev_quality
+            else:
+                iteration.improvement_delta = quality_score  # First iteration baseline
+            
+            print(f"Improvement delta: {iteration.improvement_delta:+.1f}")
+            
             self.iterations.append(iteration)
+            
+            # Anti-loop protection: Check for minimal improvement
+            if (len(self.iterations) >= 2 and 
+                abs(iteration.improvement_delta) < 0.1 and 
+                len(remaining_issues) == 0):
+                print("\n⚠ Minimal improvement with no remaining issues - triggering convergence")
+                has_converged = True
+                reason = "No meaningful improvement and no actionable issues"
             
             if has_converged:
                 print(f"\n✓ Convergence achieved: {reason}")
@@ -828,11 +914,36 @@ class ConvergenceEngine:
         # Save outputs
         self.save_outputs()
         
+        # Determine final status
+        if not self.iterations:
+            final_status = "BLOCKED"
+            convergence_reason = "No iterations completed"
+        else:
+            last_iteration = self.iterations[-1]
+            if last_iteration.ship_it:
+                final_status = "CONVERGED"
+                convergence_reason = "All critics approved"
+            elif self.current_iteration >= self.max_iterations:
+                final_status = "MAX_ITERATIONS"
+                convergence_reason = f"Reached max iterations ({self.max_iterations})"
+            elif len(last_iteration.remaining_issues) == 0:
+                final_status = "CONVERGED"
+                convergence_reason = "No actionable issues remaining"
+            else:
+                final_status = "CONVERGED"
+                convergence_reason = "Convergence criteria met"
+        
         print(f"\n{'='*60}")
         print("Convergence Complete!")
         print(f"{'='*60}")
-        print(f"Final version: {artifact.version}")
+        print(f"Final Status: {final_status}")
+        print(f"Reason: {convergence_reason}")
         print(f"Total iterations: {len(self.iterations)}")
+        if self.iterations:
+            print(f"Final quality score: {self.iterations[-1].quality_score:.1f}/100")
+            print(f"Final improvement delta: {self.iterations[-1].improvement_delta:+.1f}")
+            print(f"Remaining issues: {len(self.iterations[-1].remaining_issues)}")
+        print(f"Final version: {artifact.version}")
     
     # Placeholder LLM functions
     def _call_proposer_llm(self, proposer: str, artifact: Artifact, iteration_num: int) -> str:
