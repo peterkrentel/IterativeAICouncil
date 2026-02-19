@@ -143,6 +143,8 @@ class Iteration:
         convergence_score: Convergence score (0-1)
         human_choice: Human decision made ('a', 's', 'r', 'q')
         critic_statuses: Per-critic review status
+        ship_it: True if all critics approved
+        timestamp: ISO timestamp for this iteration
     """
     iteration_number: int
     proposer: str
@@ -154,6 +156,8 @@ class Iteration:
     convergence_score: float = 0.0
     human_choice: str = ""
     critic_statuses: Dict[str, str] = field(default_factory=dict)
+    ship_it: bool = False
+    timestamp: str = ""
     
     def to_dict(self) -> Dict:
         """Convert iteration to dictionary."""
@@ -167,7 +171,9 @@ class Iteration:
             'diff_summary': self.diff_summary,
             'convergence_score': self.convergence_score,
             'human_choice': self.human_choice,
-            'critic_statuses': self.critic_statuses
+            'critic_statuses': self.critic_statuses,
+            'ship_it': self.ship_it,
+            'timestamp': self.timestamp
         }
 
 
@@ -489,14 +495,14 @@ class ConvergenceEngine:
     # STATE 6: Convergence check
     def check_convergence(self, critiques: List[Critique], artifact: Artifact, 
                           previous_content: str, diff_ratio: Optional[float] = None,
-                          critics: Optional[List[str]] = None) -> Tuple[bool, float, str, Dict[str, str]]:
+                          critics: Optional[List[str]] = None) -> Tuple[bool, float, str, Dict[str, str], bool]:
         """
-        Check if convergence has been achieved based on per-critic review status.
+        Check if convergence has been achieved using multiple criteria.
         
-        Convergence logic:
-        - All critics are APPROVED → signal "ship it"
-        - Optional: All critics are TIGHTEN_ONLY → may require human confirmation
-        - Otherwise continue iteration
+        Convergence logic combines:
+        1. Traditional: No high-severity critiques + small diff ratio
+        2. Consensus: Per-critic review status
+        3. Ship-it flag: All critics APPROVED
         
         Critic review statuses:
         - REJECT_STRUCTURAL: Severe structural issues (severity 5)
@@ -512,7 +518,7 @@ class ConvergenceEngine:
             critics: List of critic names to assess
             
         Returns:
-            Tuple of (has_converged, convergence_score, reason, critic_statuses)
+            Tuple of (has_converged, convergence_score, reason, critic_statuses, ship_it)
         """
         print(f"\n{'='*60}")
         print("STATE 6: Convergence Check")
@@ -540,51 +546,76 @@ class ConvergenceEngine:
         for critic, status in critic_statuses.items():
             print(f"  {critic}: {status}")
         
-        # Check 1: All critics approved
-        all_approved = all(status == 'APPROVED' for status in critic_statuses.values())
-        all_tighten_only = all(status in ['APPROVED', 'TIGHTEN_ONLY'] for status in critic_statuses.values())
+        # Check ship_it flag: All critics approved
+        ship_it = all(status == 'APPROVED' for status in critic_statuses.values()) if critic_statuses else False
         
-        # Check 2: Structural diff (for informational purposes)
+        if ship_it:
+            print(f"\n🚀 SHIP IT! All critics APPROVED")
+        
+        # Check 1: Traditional high-severity check
+        high_severity_remaining = [c for c in critiques if c.severity >= 3]
+        no_high_severity = len(high_severity_remaining) == 0
+        
+        print(f"\nHigh-severity critiques remaining: {len(high_severity_remaining)}")
+        
+        # Check 2: Structural diff < 5%
         if diff_ratio is None:
             diff_ratio = self._calculate_diff_ratio(previous_content, artifact.content)
+        small_diff = diff_ratio < 0.05
         
-        print(f"\nStructural diff: {diff_ratio*100:.2f}%")
+        print(f"Structural diff: {diff_ratio*100:.2f}%")
         
         # Check 3: Max iterations reached
         max_iterations_reached = self.current_iteration >= self.max_iterations
         
         print(f"Iteration: {self.current_iteration}/{self.max_iterations}")
         
-        # Calculate convergence score (0.0 - 1.0) based on critic statuses
+        # Calculate convergence score (0.0 - 1.0) combining both approaches
         convergence_score = 0.0
-        if all_approved:
-            convergence_score = 1.0
-        elif all_tighten_only:
-            convergence_score = 0.8
+        
+        # Consensus-based component (60% weight)
+        if ship_it:
+            consensus_score = 1.0
+        elif all(status in ['APPROVED', 'TIGHTEN_ONLY'] for status in critic_statuses.values()):
+            consensus_score = 0.8
         else:
             # Calculate based on status distribution
             approved_count = sum(1 for s in critic_statuses.values() if s == 'APPROVED')
             tighten_count = sum(1 for s in critic_statuses.values() if s == 'TIGHTEN_ONLY')
             total_critics = len(critic_statuses) if critic_statuses else 1
-            convergence_score = (approved_count * 1.0 + tighten_count * 0.8) / total_critics
+            consensus_score = (approved_count * 1.0 + tighten_count * 0.8) / total_critics
+        
+        # Traditional component (40% weight)
+        traditional_score = 0.0
+        if no_high_severity:
+            traditional_score += 0.5
+        if small_diff:
+            traditional_score += 0.3
+        traditional_score += min(0.2, (1 - diff_ratio) * 0.2)
+        
+        # Combined score
+        convergence_score = (consensus_score * 0.6) + (traditional_score * 0.4)
         
         print(f"Convergence score: {convergence_score:.2f}")
         
-        # Determine convergence
+        # Determine convergence using multiple criteria
         has_converged = False
         reason = ""
         
-        # Convergence criteria based on critic consensus
-        if self.current_iteration >= 1:
-            if all_approved:
-                has_converged = True
-                reason = "All critics APPROVED - ship it!"
-            elif all_tighten_only and self.current_iteration >= 2:
-                # Allow convergence if all critics only have minor issues after 2+ iterations
-                has_converged = True
-                reason = "All critics at TIGHTEN_ONLY or better - acceptable quality"
-        
-        if max_iterations_reached:
+        # Priority 1: Ship it flag (strongest signal)
+        if self.current_iteration >= 1 and ship_it:
+            has_converged = True
+            reason = "All critics APPROVED - ship it! 🚀"
+        # Priority 2: Traditional convergence (backward compatible)
+        elif self.current_iteration >= 1 and no_high_severity and small_diff:
+            has_converged = True
+            reason = "No high-severity critiques and minimal changes"
+        # Priority 3: Consensus convergence (all tighten only after 2+ iterations)
+        elif self.current_iteration >= 2 and all(status in ['APPROVED', 'TIGHTEN_ONLY'] for status in critic_statuses.values()):
+            has_converged = True
+            reason = "All critics at TIGHTEN_ONLY or better - acceptable quality"
+        # Priority 4: Max iterations (fallback)
+        elif max_iterations_reached:
             has_converged = True
             reason = f"Maximum iterations ({self.max_iterations}) reached"
         
@@ -593,7 +624,7 @@ class ConvergenceEngine:
         else:
             print(f"✗ Convergence not yet achieved. Continuing iteration.")
         
-        return has_converged, convergence_score, reason, critic_statuses
+        return has_converged, convergence_score, reason, critic_statuses, ship_it
     
     def _calculate_diff_ratio(self, old_content: str, new_content: str) -> float:
         """Calculate the ratio of changes between two strings."""
@@ -711,11 +742,12 @@ class ConvergenceEngine:
             print(f"  Proposer: {proposer}")
             print(f"  Critics: {', '.join(critics)}")
             
-            # Create iteration object
+            # Create iteration object with timestamp
             iteration = Iteration(
                 iteration_number=iteration_num,
                 proposer=proposer,
-                critics=critics
+                critics=critics,
+                timestamp=datetime.now().isoformat()
             )
             
             # Save previous content for diff
@@ -780,11 +812,12 @@ class ConvergenceEngine:
             # STATE 6: Check convergence
             # Check all critiques that weren't applied (both rejected and high-severity ones)
             unapplied_critiques = rejected
-            has_converged, score, reason, critic_statuses = self.check_convergence(
+            has_converged, score, reason, critic_statuses, ship_it = self.check_convergence(
                 unapplied_critiques, artifact, previous_content, diff_ratio, critics
             )
             iteration.convergence_score = score
             iteration.critic_statuses = critic_statuses
+            iteration.ship_it = ship_it
             
             self.iterations.append(iteration)
             
