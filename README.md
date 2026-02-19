@@ -2,12 +2,25 @@
 
 ## Overview
 
-**IterativeAICouncil** is a multi-LLM, phase-aware, iterative plan refinement system.  
+**IterativeAICouncil** is a multi-LLM, phase-aware, iterative plan refinement system with two modes of operation:
 
+1. **Plan Orchestrator** - Multi-agent iterative plan refinement (original system)
+2. **CLI Convergence Engine** - Interactive artifact refinement with human-in-the-loop (NEW!)
+
+### Plan Orchestrator
 - Multiple LLMs act as a "council" reviewing, critiquing, and improving plans.  
 - Each iteration incorporates feedback from all agents until **tradeoff consensus** is achieved.  
 - Phase-aware execution prevents overbuilding and allows items to move to future phases.  
-- Fully **Dockerized** for portability and lift-and-shift deployment.  
+- Fully **Dockerized** for portability and lift-and-shift deployment.
+
+### CLI Convergence Engine ⚡ NEW!
+- **Interactive CLI** for artifact refinement with structured critique workflow
+- **Role rotation**: Models alternate as proposer and critics across iterations
+- **Human approval gate**: Review and approve/reject critiques at each iteration
+- **Convergence detection**: Auto-stops when critiques are minimal or structural changes < 5%
+- **Complete audit trail**: Iteration logs, critique history, and diffs for every change
+
+👉 **See [CLI_README.md](CLI_README.md) for CLI tool documentation**
 
 ---
 
@@ -275,6 +288,48 @@ The integrator doesn't blindly accept all feedback. It uses judgment to:
 - Items not relevant to current phase are automatically moved to future phases.
 - Phase boundaries are tracked in `tradeoff_log.md`.
 - Orchestrator ensures that implementation only occurs at correct phase scope.
+
+---
+
+## Quick Start - CLI Convergence Engine
+
+### Installation
+```bash
+git clone https://github.com/peterkrentel/IterativeAICouncil.git
+cd IterativeAICouncil
+pip install -r requirements.txt
+```
+
+### Basic Usage
+```bash
+# Refine a Markdown document
+python aicouncil.py converge input.md --models gpt,copilot,claude
+
+# Refine with custom iterations
+python aicouncil.py converge design.md --models gpt,copilot --max-iterations 4
+
+# See all options
+python aicouncil.py converge --help
+```
+
+### Example Run
+```bash
+cd examples
+python ../aicouncil.py converge ecommerce_api.md --models gpt,copilot,claude
+```
+
+**Process:**
+1. Load artifact
+2. For each iteration:
+   - One model proposes revision
+   - Other models critique
+   - You approve/reject critiques
+   - System applies changes
+3. Stops at convergence or max iterations
+4. Outputs: final artifact, iteration log, critique history, diffs
+
+👉 **Full documentation:** [CLI_README.md](CLI_README.md)  
+👉 **Examples:** [examples/README.md](examples/README.md)
 
 ---
 
