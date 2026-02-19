@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""
+AI Council CLI - Entry point wrapper
+"""
+
+import sys
+import os
+
+# Add the parent directory to path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+
+# Import and run main
+from aicouncil import main
+
+if __name__ == '__main__':
+    main()

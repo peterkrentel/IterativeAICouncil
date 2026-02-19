@@ -55,3 +55,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# AI Council CLI outputs
+output/
+test_output/
+diff_history/
