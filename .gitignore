@@ -16,8 +16,17 @@ htmlcov/
 
 # Environment
 .env
+.env.local
+.env.*.local
 *.pem
 *.key
+
+# AWS Credentials (Personal Dev)
+aws-credentials.txt
+aws-config.txt
+.aws-credentials
+credentials.txt
+bootstrap-output.txt
 
 # Terraform
 terraform/.terraform/
