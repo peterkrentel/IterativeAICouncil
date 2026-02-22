@@ -1,0 +1,129 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'aicouncil.py'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'k8s/**'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: aicouncil
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Setup Terraform (to get outputs)
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+          terraform_wrapper: false
+
+      - name: Get EC2 IP from Terraform
+        id: get-ip
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=aicouncil/terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            -backend-config="encrypt=true"
+          EC2_IP=$(terraform output -raw ec2_public_ip)
+          echo "ec2_ip=$EC2_IP" >> $GITHUB_OUTPUT
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/k3s-key
+          chmod 600 ~/.ssh/k3s-key
+          ssh-keyscan -H ${{ steps.get-ip.outputs.ec2_ip }} >> ~/.ssh/known_hosts
+
+      - name: Update K8s manifests with new image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          sed -i "s|IMAGE_PLACEHOLDER|$ECR_REGISTRY/aicouncil:$IMAGE_TAG|g" k8s/deployment.yaml
+
+      - name: Create K8s secrets
+        run: |
+          cat > k8s/secrets.yaml <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: aicouncil-secrets
+          type: Opaque
+          stringData:
+            GROQ_API_KEY: "${{ secrets.GROQ_API_KEY }}"
+            GOOGLE_API_KEY: "${{ secrets.GOOGLE_API_KEY }}"
+          EOF
+
+      - name: Deploy to K3s
+        env:
+          EC2_IP: ${{ steps.get-ip.outputs.ec2_ip }}
+        run: |
+          # Copy manifests to EC2
+          scp -i ~/.ssh/k3s-key k8s/*.yaml ubuntu@$EC2_IP:/tmp/
+          
+          # Apply manifests
+          ssh -i ~/.ssh/k3s-key ubuntu@$EC2_IP "sudo kubectl apply -f /tmp/"
+          
+          # Clean up secrets file
+          rm k8s/secrets.yaml
+
+      - name: Wait for deployment
+        env:
+          EC2_IP: ${{ steps.get-ip.outputs.ec2_ip }}
+        run: |
+          ssh -i ~/.ssh/k3s-key ubuntu@$EC2_IP "sudo kubectl rollout status deployment/aicouncil --timeout=5m"
+
+      - name: Get service URL
+        id: get-url
+        env:
+          EC2_IP: ${{ steps.get-ip.outputs.ec2_ip }}
+        run: |
+          echo "url=http://$EC2_IP" >> $GITHUB_OUTPUT
+
+      - name: Summary
+        run: |
+          echo "## 🎉 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Application URL:** ${{ steps.get-url.outputs.url }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ steps.login-ecr.outputs.registry }}/aicouncil:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Test the API:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "curl ${{ steps.get-url.outputs.url }}/health" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+

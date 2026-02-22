@@ -291,45 +291,80 @@ The integrator doesn't blindly accept all feedback. It uses judgment to:
 
 ---
 
-## Quick Start - CLI Convergence Engine
+## Quick Start - Production Deployment
 
-### Installation
+### 🚀 Deploy to AWS (Fully Automated via GitHub Actions)
+
+**No local setup required!** Everything runs in GitHub Actions.
+
+**Prerequisites:**
+- AWS Account
+- GitHub Account
+- API Keys (Groq or Google Gemini - both have free tiers)
+
+**Deployment Steps:**
+
+1. **Fork/Clone this repository**
+   ```bash
+   git clone https://github.com/peterkrentel/IterativeAICouncil.git
+   cd IterativeAICouncil
+   ```
+
+2. **Run one-time bootstrap script** (only local step)
+   ```bash
+   ./scripts/bootstrap.sh
+   ```
+   This creates AWS infrastructure for Terraform state and GitHub OIDC.
+
+3. **Add GitHub Secrets** (from bootstrap output)
+   - `AWS_ACCOUNT_ID`
+   - `AWS_REGION`
+   - `GROQ_API_KEY` (get from https://console.groq.com/keys)
+   - `GOOGLE_API_KEY` (get from https://aistudio.google.com/app/apikey)
+
+4. **Deploy via GitHub Actions**
+   - Run "Terraform Apply" workflow (manual trigger)
+   - Run "Build and Deploy" workflow (auto on push to main)
+
+5. **Access your deployment**
+   ```bash
+   curl http://EC2_IP/health
+   ```
+
+**Cost:** $0-3/month (year 1 with AWS free tier), ~$21/month (year 2+)
+
+👉 **Complete guide:** [QUICKSTART.md](QUICKSTART.md) (15 minutes)
+👉 **Full documentation:** [DEPLOYMENT.md](DEPLOYMENT.md)
+👉 **Testing:** Automated via GitHub Actions workflow
+
+### 📋 Available Workflows
+
+- **00 - Test Application** - Runs on every PR/push (validates code, tests CLI, tests server, tests Docker)
+- **01 - Terraform Plan** - Auto-runs on PR to terraform/ (shows infrastructure changes)
+- **02 - Terraform Apply** - Manual trigger with approval (deploys infrastructure)
+- **03 - Build and Deploy** - Auto-runs on push to main (builds Docker, deploys to K3s)
+- **04 - Destroy** - Manual trigger only (tears down infrastructure)
+
+### 🎯 Usage Modes
+
+**CLI Mode:**
 ```bash
-git clone https://github.com/peterkrentel/IterativeAICouncil.git
-cd IterativeAICouncil
-pip install -r requirements.txt
+python aicouncil.py converge input.md --models critic1,critic2 --max-iterations 5
 ```
 
-### Basic Usage
+**Server Mode:**
 ```bash
-# Refine a Markdown document
-python aicouncil.py converge input.md --models gpt,copilot,claude
-
-# Refine with custom iterations
-python aicouncil.py converge design.md --models gpt,copilot --max-iterations 4
-
-# See all options
-python aicouncil.py converge --help
+python aicouncil.py serve --port 8000
 ```
 
-### Example Run
+**API Mode:**
 ```bash
-cd examples
-python ../aicouncil.py converge ecommerce_api.md --models gpt,copilot,claude
+curl -X POST http://your-deployment/converge \
+  -H "Content-Type: application/json" \
+  -d '{"content": "# Document", "models": ["critic1", "critic2"]}'
 ```
 
-**Process:**
-1. Load artifact
-2. For each iteration:
-   - One model proposes revision
-   - Other models critique
-   - You approve/reject critiques
-   - System applies changes
-3. Stops at convergence or max iterations
-4. Outputs: final artifact, iteration log, critique history, diffs
-
-👉 **Full documentation:** [CLI_README.md](CLI_README.md)  
-👉 **Examples:** [examples/README.md](examples/README.md)
+👉 **API Documentation:** http://your-deployment/docs (auto-generated Swagger UI)
 
 ---
 

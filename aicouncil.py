@@ -21,6 +21,169 @@ from datetime import datetime
 import difflib
 import shutil
 
+# LLM Provider imports
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+    print("Warning: groq package not installed. Install with: pip install groq")
+
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    print("Warning: google-generativeai package not installed. Install with: pip install google-generativeai")
+
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    print("Warning: requests package not installed. Install with: pip install requests")
+
+try:
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import JSONResponse
+    from pydantic import BaseModel
+    import uvicorn
+    FASTAPI_AVAILABLE = True
+except ImportError:
+    FASTAPI_AVAILABLE = False
+    print("Warning: fastapi/uvicorn not installed. Install with: pip install fastapi uvicorn")
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv is optional
+
+
+# ============================================================================
+# LLM Provider Classes
+# ============================================================================
+
+class LLMProvider:
+    """Base class for LLM providers."""
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """
+        Send a chat request to the LLM.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            temperature: Sampling temperature (0.0 to 1.0)
+
+        Returns:
+            Response text from the LLM
+        """
+        raise NotImplementedError("Subclasses must implement chat()")
+
+    def get_name(self) -> str:
+        """Get the provider name."""
+        raise NotImplementedError("Subclasses must implement get_name()")
+
+
+class GroqProvider(LLMProvider):
+    """Groq API provider (free tier: 14,400 requests/day)."""
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "llama-3.1-70b-versatile"):
+        self.api_key = api_key or os.getenv("GROQ_API_KEY")
+        self.model = model
+
+        if not self.api_key:
+            raise ValueError("GROQ_API_KEY not found in environment")
+
+        if not GROQ_AVAILABLE:
+            raise ImportError("groq package not installed. Install with: pip install groq")
+
+        self.client = Groq(api_key=self.api_key)
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """Call Groq API."""
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=4096
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            raise RuntimeError(f"Groq API error: {e}")
+
+    def get_name(self) -> str:
+        return f"Groq ({self.model})"
+
+
+class GeminiProvider(LLMProvider):
+    """Google Gemini API provider (free tier: 1,500 requests/day)."""
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-1.5-flash"):
+        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
+        self.model = model
+
+        if not self.api_key:
+            raise ValueError("GOOGLE_API_KEY not found in environment")
+
+        if not GEMINI_AVAILABLE:
+            raise ImportError("google-generativeai package not installed. Install with: pip install google-generativeai")
+
+        genai.configure(api_key=self.api_key)
+        self.client = genai.GenerativeModel(self.model)
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """Call Gemini API."""
+        try:
+            # Convert messages to Gemini format
+            # Gemini expects a single prompt or conversation history
+            prompt = self._convert_messages(messages)
+
+            response = self.client.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=4096
+                )
+            )
+            return response.text
+        except Exception as e:
+            raise RuntimeError(f"Gemini API error: {e}")
+
+    def _convert_messages(self, messages: List[Dict[str, str]]) -> str:
+        """Convert OpenAI-style messages to Gemini prompt."""
+        prompt_parts = []
+        for msg in messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+
+            if role == 'system':
+                prompt_parts.append(f"Instructions: {content}")
+            elif role == 'user':
+                prompt_parts.append(f"User: {content}")
+            elif role == 'assistant':
+                prompt_parts.append(f"Assistant: {content}")
+
+        return "\n\n".join(prompt_parts)
+
+    def get_name(self) -> str:
+        return f"Gemini ({self.model})"
+
+
+class MockProvider(LLMProvider):
+    """Mock provider for testing without API keys."""
+
+    def __init__(self, name: str = "Mock"):
+        self.name = name
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """Return mock response."""
+        return f"[Mock response from {self.name}]"
+
+    def get_name(self) -> str:
+        return self.name
+
 
 @dataclass
 class Artifact:
@@ -197,39 +360,67 @@ class ConvergenceEngine:
     
     VALID_CATEGORIES = ['architecture', 'performance', 'security', 'simplicity', 'bug-risk', 'style']
     
-    def __init__(self, models: List[str], max_iterations: int = 5, output_dir: str = "./output"):
+    def __init__(self, models: List[str], max_iterations: int = 5, output_dir: str = "./output",
+                 llm_provider: Optional[LLMProvider] = None):
         """
         Initialize the convergence engine.
-        
+
         Ensures deterministic model rotation and critic assignment.
-        
+
         Args:
             models: List of model names to use (minimum 2 required)
             max_iterations: Maximum number of iterations (default: 5)
             output_dir: Directory for output files
+            llm_provider: LLM provider to use (auto-detects if None)
         """
         # Assert minimum 2 models required
         assert len(models) >= 2, "At least 2 models required (1 proposer + 1 critic minimum)"
-        
+
         self.models = models
         self.max_iterations = max_iterations
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-        
+
         # Create diff_history directory
         self.diff_dir = self.output_dir / "diff_history"
         self.diff_dir.mkdir(exist_ok=True)
-        
+
         # Iteration tracking
         self.iterations: List[Iteration] = []
         self.current_iteration = 0
-        
+
         # Artifact
         self.artifact: Optional[Artifact] = None
-        
+
         # Telemetry file path
         self.telemetry_file = self.output_dir / "telemetry.jsonl"
-        
+
+        # Initialize LLM provider
+        self.llm_provider = llm_provider or self._auto_detect_provider()
+
+    def _auto_detect_provider(self) -> LLMProvider:
+        """Auto-detect and initialize LLM provider based on available API keys."""
+        # Try Groq first (fastest, good quality)
+        if os.getenv("GROQ_API_KEY"):
+            try:
+                print("🤖 Using Groq API (llama-3.1-70b-versatile)")
+                return GroqProvider()
+            except Exception as e:
+                print(f"⚠ Groq initialization failed: {e}")
+
+        # Try Gemini second (good quality, free tier)
+        if os.getenv("GOOGLE_API_KEY"):
+            try:
+                print("🤖 Using Google Gemini API (gemini-1.5-flash)")
+                return GeminiProvider()
+            except Exception as e:
+                print(f"⚠ Gemini initialization failed: {e}")
+
+        # Fall back to mock provider
+        print("⚠ No API keys found. Using mock provider.")
+        print("  Set GROQ_API_KEY or GOOGLE_API_KEY environment variable for real LLM.")
+        return MockProvider()
+
     def _log_telemetry(self, iteration: 'Iteration') -> None:
         """
         Append iteration telemetry to JSONL log file.
@@ -820,12 +1011,15 @@ class ConvergenceEngine:
         print(f"✓ Diff history: {self.diff_dir}/")
     
     # Main convergence loop
-    def converge(self, input_file: str) -> None:
+    def converge(self, input_file: str) -> Artifact:
         """
         Run the complete convergence process.
-        
+
         Args:
             input_file: Path to input artifact file
+
+        Returns:
+            The final converged artifact
         """
         print(f"\n{'='*60}")
         print("AI Council Convergence Engine")
@@ -1005,64 +1199,316 @@ class ConvergenceEngine:
             print(f"Final improvement delta: {self.iterations[-1].improvement_delta:+.1f}")
             print(f"Remaining issues: {len(self.iterations[-1].remaining_issues)}")
         print(f"Final version: {artifact.version}")
-    
-    # Placeholder LLM functions
+
+        return artifact
+
+    def converge_artifact(self, artifact: Artifact) -> Artifact:
+        """
+        Run the complete convergence process on an existing artifact.
+
+        This is a variant of converge() that accepts an Artifact object directly
+        instead of loading from a file. Useful for API endpoints.
+
+        Args:
+            artifact: The artifact to converge
+
+        Returns:
+            The final converged artifact
+        """
+        print(f"\n{'='*60}")
+        print("AI Council Convergence Engine")
+        print(f"{'='*60}")
+        print(f"Models: {', '.join(self.models)}")
+        print(f"Max iterations: {self.max_iterations}")
+        print(f"Output directory: {self.output_dir}")
+
+        # Main iteration loop
+        for iteration_num in range(1, self.max_iterations + 1):
+            self.current_iteration = iteration_num
+
+            print(f"\n{'#'*60}")
+            print(f"# ITERATION {iteration_num}/{self.max_iterations}")
+            print(f"{'#'*60}")
+
+            # Rotate models: first model is proposer, rest are critics
+            proposer_idx = (iteration_num - 1) % len(self.models)
+            proposer = self.models[proposer_idx]
+            critics = [m for i, m in enumerate(self.models) if i != proposer_idx]
+
+            print(f"\nRoles for this iteration:")
+            print(f"  Proposer: {proposer}")
+            print(f"  Critics: {', '.join(critics)}")
+
+            # Create iteration object with timestamp
+            iteration = Iteration(
+                iteration_number=iteration_num,
+                proposer=proposer,
+                critics=critics,
+                timestamp=datetime.now().isoformat()
+            )
+
+            # Save previous content for diff
+            previous_content = artifact.content
+
+            # STATE 1: Run proposer
+            revised_content = self.run_proposer(proposer, artifact, iteration_num)
+
+            # Temporarily update artifact for critics to review
+            # Use deep copy of history to prevent mutation
+            import copy
+            temp_artifact = Artifact(
+                id=artifact.id,
+                version=artifact.version,
+                content=revised_content,
+                history=copy.deepcopy(artifact.history)
+            )
+
+            # STATE 2: Run critics (auto-approve for API mode)
+            critiques = self.run_critics(critics, temp_artifact, iteration_num)
+            iteration.critiques_received = critiques
+
+            # STATE 3: Consolidate critiques
+            consolidated_critiques = self.consolidate_critiques(critiques)
+
+            # STATE 4: Auto-approve for API mode (no human gate)
+            # Apply all critiques automatically
+            approved = consolidated_critiques
+            rejected = []
+            iteration.applied_critiques = approved
+            iteration.rejected_critiques = rejected
+            iteration.human_choice = 'auto'
+            iteration.human_override = 'accepted'
+
+            print(f"\n📝 Auto-approved (API mode):")
+            print(f"  Applied: {len(approved)} critique(s)")
+
+            # STATE 5: Apply critiques
+            if approved:
+                # Apply to revised content
+                final_content = self._apply_critiques_to_content(revised_content, approved)
+            else:
+                # No critiques applied, use revised content as-is
+                final_content = revised_content
+
+            # Update artifact using apply_change to maintain history consistency
+            change_description = f"Iteration {iteration_num}: Proposer={proposer}, Applied {len(approved)} critique(s)"
+            artifact.apply_change(change_description, final_content)
+
+            # Calculate diff once for both saving and convergence check
+            diff_ratio = self._calculate_diff_ratio(previous_content, artifact.content)
+
+            # Save diff
+            self.save_diff(iteration_num, previous_content, artifact.content)
+            iteration.diff_summary = f"Changed {diff_ratio*100:.2f}% of content"
+
+            # STATE 6: Check convergence
+            # Check all critiques that weren't applied (both rejected and high-severity ones)
+            unapplied_critiques = rejected
+            has_converged, score, reason, critic_statuses, ship_it, quality_score, remaining_issues = self.check_convergence(
+                unapplied_critiques, artifact, previous_content, diff_ratio, critics
+            )
+            iteration.convergence_score = score
+            iteration.quality_score = quality_score
+            iteration.remaining_issues = remaining_issues
+            iteration.critic_statuses = critic_statuses
+            iteration.ship_it = ship_it
+
+            # Calculate improvement delta (quality improvement from previous iteration)
+            if self.iterations:
+                prev_quality = self.iterations[-1].quality_score
+                iteration.improvement_delta = quality_score - prev_quality
+            else:
+                iteration.improvement_delta = quality_score  # First iteration baseline
+
+            print(f"Improvement delta: {iteration.improvement_delta:+.1f}")
+
+            self.iterations.append(iteration)
+
+            # Log telemetry after iteration is complete
+            self._log_telemetry(iteration)
+
+            # Anti-loop protection: Check for minimal improvement
+            if (len(self.iterations) >= 2 and
+                abs(iteration.improvement_delta) < 0.1 and
+                len(remaining_issues) == 0):
+                print("\n⚠ Minimal improvement with no remaining issues - triggering convergence")
+                has_converged = True
+                reason = "No meaningful improvement and no actionable issues"
+
+            if has_converged:
+                print(f"\n✓ Convergence achieved: {reason}")
+                break
+
+        # Save outputs
+        self.save_outputs()
+
+        # Determine final status
+        if not self.iterations:
+            final_status = "BLOCKED"
+            convergence_reason = "No iterations completed"
+        else:
+            last_iteration = self.iterations[-1]
+            if last_iteration.ship_it:
+                final_status = "CONVERGED"
+                convergence_reason = "All critics approved"
+            elif self.current_iteration >= self.max_iterations:
+                final_status = "MAX_ITERATIONS"
+                convergence_reason = f"Reached max iterations ({self.max_iterations})"
+            elif len(last_iteration.remaining_issues) == 0:
+                final_status = "CONVERGED"
+                convergence_reason = "No actionable issues remaining"
+            else:
+                final_status = "CONVERGED"
+                convergence_reason = "Convergence criteria met"
+
+        print(f"\n{'='*60}")
+        print("Convergence Complete!")
+        print(f"{'='*60}")
+        print(f"Final Status: {final_status}")
+        print(f"Reason: {convergence_reason}")
+        print(f"Total iterations: {len(self.iterations)}")
+        if self.iterations:
+            print(f"Final quality score: {self.iterations[-1].quality_score:.1f}/100")
+            print(f"Final improvement delta: {self.iterations[-1].improvement_delta:+.1f}")
+            print(f"Remaining issues: {len(self.iterations[-1].remaining_issues)}")
+        print(f"Final version: {artifact.version}")
+
+        return artifact
+
+    # LLM API functions
     def _call_proposer_llm(self, proposer: str, artifact: Artifact, iteration_num: int) -> str:
         """
-        Placeholder for proposer LLM API call.
-        
-        In a real implementation, this would call the actual LLM API
-        to generate a revised version of the artifact.
+        Call LLM API to generate a revised version of the artifact.
+
+        Args:
+            proposer: Name of the proposer model
+            artifact: Current artifact
+            iteration_num: Current iteration number
+
+        Returns:
+            Revised content from the LLM
         """
-        print(f"  [PLACEHOLDER] Calling {proposer} LLM for revision...")
-        
-        # Mock revision: add a comment indicating revision
-        revision_note = f"\n\n<!-- Revised by {proposer} in iteration {iteration_num} -->\n"
-        return artifact.content + revision_note
+        print(f"  🤖 Calling {self.llm_provider.get_name()} for revision...")
+
+        # Get previous critiques if any
+        critiques_summary = ""
+        if self.iterations:
+            last_iteration = self.iterations[-1]
+            if last_iteration.applied_critiques:
+                critiques_summary = "\n\nPrevious critiques to address:\n"
+                for critique in last_iteration.applied_critiques:
+                    critiques_summary += f"- [{critique.category}] {critique.description}\n"
+                    critiques_summary += f"  Suggested: {critique.suggested_change}\n"
+
+        messages = [
+            {
+                "role": "system",
+                "content": """You are an expert software architect and code reviewer.
+Your task is to improve the provided artifact by addressing the critiques.
+Maintain the original structure and intent while making improvements.
+Return ONLY the improved artifact content, no explanations."""
+            },
+            {
+                "role": "user",
+                "content": f"""Iteration {iteration_num}: Please improve this artifact.
+
+{critiques_summary}
+
+Current artifact:
+{artifact.content}
+
+Provide the improved version:"""
+            }
+        ]
+
+        try:
+            revised_content = self.llm_provider.chat(messages, temperature=0.7)
+            return revised_content.strip()
+        except Exception as e:
+            print(f"  ⚠ LLM API error: {e}")
+            print(f"  Falling back to original content")
+            return artifact.content
     
     def _call_critic_llm(self, critic: str, artifact: Artifact, iteration_num: int) -> List[Critique]:
         """
-        Placeholder for critic LLM API call.
-        
-        In a real implementation, this would call the actual LLM API
-        to generate structured critiques in JSON format.
+        Call LLM API to generate structured critiques.
+
+        Args:
+            critic: Name of the critic model
+            artifact: Current artifact
+            iteration_num: Current iteration number
+
+        Returns:
+            List of Critique objects
         """
-        print(f"    [PLACEHOLDER] Calling {critic} LLM for critique...")
-        
-        # Mock critiques based on critic name
-        mock_critiques = []
-        
-        if 'gpt' in critic.lower():
-            mock_critiques.append(Critique(
-                critic=critic,
-                category='simplicity',
-                severity=2,
-                location='line 10-20',
-                description='Code could be more concise',
-                suggested_change='Refactor complex logic into smaller functions'
-            ))
-        
-        if 'copilot' in critic.lower():
-            mock_critiques.append(Critique(
-                critic=critic,
-                category='bug-risk',
-                severity=3,
-                location='function parse_input',
-                description='Missing input validation',
-                suggested_change='Add validation for edge cases and null inputs'
-            ))
-        
-        if 'augment' in critic.lower() or 'claude' in critic.lower():
-            mock_critiques.append(Critique(
-                critic=critic,
-                category='security',
-                severity=4,
-                location='authentication section',
-                description='Potential security vulnerability in auth flow',
-                suggested_change='Implement rate limiting and secure token storage'
-            ))
-        
-        return mock_critiques
+        print(f"    🤖 Calling {self.llm_provider.get_name()} for critique...")
+
+        messages = [
+            {
+                "role": "system",
+                "content": """You are an expert code reviewer. Analyze the artifact and provide structured critiques.
+
+Return your response as a JSON array of critique objects with this exact format:
+[
+  {
+    "category": "architecture|performance|security|simplicity|bug-risk|style",
+    "severity": 1-5,
+    "location": "specific location in artifact",
+    "description": "clear description of the issue",
+    "suggested_change": "specific suggestion for improvement"
+  }
+]
+
+Focus on actionable, high-value feedback. If the artifact is good, return an empty array []."""
+            },
+            {
+                "role": "user",
+                "content": f"""Review this artifact and provide structured critiques:
+
+{artifact.content}
+
+Return JSON array of critiques:"""
+            }
+        ]
+
+        try:
+            response = self.llm_provider.chat(messages, temperature=0.3)
+
+            # Extract JSON from response (handle markdown code blocks)
+            json_str = response.strip()
+            if "```json" in json_str:
+                json_str = json_str.split("```json")[1].split("```")[0].strip()
+            elif "```" in json_str:
+                json_str = json_str.split("```")[1].split("```")[0].strip()
+
+            # Parse JSON
+            critiques_data = json.loads(json_str)
+
+            # Convert to Critique objects
+            critiques = []
+            for c in critiques_data:
+                try:
+                    critique = Critique(
+                        critic=critic,
+                        category=c.get('category', 'style'),
+                        severity=int(c.get('severity', 3)),
+                        location=c.get('location'),
+                        description=c.get('description', ''),
+                        suggested_change=c.get('suggested_change', '')
+                    )
+                    critiques.append(critique)
+                except Exception as e:
+                    print(f"    ⚠ Skipping invalid critique: {e}")
+
+            return critiques
+
+        except json.JSONDecodeError as e:
+            print(f"    ⚠ Failed to parse JSON from LLM response: {e}")
+            print(f"    Response was: {response[:200]}...")
+            return []
+        except Exception as e:
+            print(f"    ⚠ LLM API error: {e}")
+            return []
     
     def _apply_critiques_to_content(self, content: str, critiques: List[Critique]) -> str:
         """
@@ -1114,6 +1560,94 @@ class ConvergenceEngine:
         return content + applied_notes
 
 
+# ============================================================================
+# FastAPI Server (for Kubernetes deployment)
+# ============================================================================
+
+if FASTAPI_AVAILABLE:
+    app = FastAPI(
+        title="AI Council API",
+        version="1.0.0",
+        description="Iterative artifact refinement using multiple AI models"
+    )
+
+    class ConvergeRequest(BaseModel):
+        """Request model for /converge endpoint."""
+        content: str
+        models: List[str] = ["critic1", "critic2"]
+        max_iterations: int = 5
+
+    class ConvergeResponse(BaseModel):
+        """Response model for /converge endpoint."""
+        status: str
+        final_content: str
+        iterations: int
+        convergence_reason: str
+        quality_score: float
+
+    @app.get("/health")
+    def health():
+        """Health check endpoint for Kubernetes liveness/readiness probes."""
+        return {
+            "status": "healthy",
+            "service": "aicouncil",
+            "version": "1.0.0"
+        }
+
+    @app.post("/converge", response_model=ConvergeResponse)
+    def converge_api(request: ConvergeRequest):
+        """
+        Run convergence engine via API.
+
+        Args:
+            request: ConvergeRequest with content, models, and max_iterations
+
+        Returns:
+            ConvergeResponse with final content and metadata
+        """
+        try:
+            # Create temporary artifact
+            artifact = Artifact(
+                id="api-request",
+                version=1,
+                content=request.content,
+                history=[]
+            )
+
+            # Run convergence
+            engine = ConvergenceEngine(
+                models=request.models,
+                max_iterations=request.max_iterations,
+                output_dir="/tmp/aicouncil"
+            )
+
+            final_artifact = engine.converge_artifact(artifact)
+
+            # Determine convergence reason
+            if engine.iterations:
+                last_iteration = engine.iterations[-1]
+                if last_iteration.ship_it:
+                    convergence_reason = "All critics approved"
+                elif len(engine.iterations) >= request.max_iterations:
+                    convergence_reason = f"Reached max iterations ({request.max_iterations})"
+                else:
+                    convergence_reason = "Convergence criteria met"
+                quality_score = last_iteration.quality_score
+            else:
+                convergence_reason = "No iterations completed"
+                quality_score = 0.0
+
+            return ConvergeResponse(
+                status="success",
+                final_content=final_artifact.content,
+                iterations=len(engine.iterations),
+                convergence_reason=convergence_reason,
+                quality_score=quality_score
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -1124,48 +1658,75 @@ Examples:
   %(prog)s converge input.md --models gpt,copilot,augment
   %(prog)s converge design.md --models gpt,copilot,augment --max-iterations 4
   %(prog)s converge code.py --models claude,gpt --output ./results
+  %(prog)s serve --port 8000
         """
     )
-    
+
     subparsers = parser.add_subparsers(dest='command', help='Commands')
-    
+
     # Converge command
     converge_parser = subparsers.add_parser('converge', help='Run convergence process on an artifact')
     converge_parser.add_argument('input_file', help='Input artifact file (Markdown or code)')
-    converge_parser.add_argument('--models', required=True, 
+    converge_parser.add_argument('--models', required=True,
                                  help='Comma-separated list of models (e.g., gpt,copilot,augment)')
     converge_parser.add_argument('--max-iterations', type=int, default=5,
                                  help='Maximum number of iterations (default: 5)')
     converge_parser.add_argument('--output', default='./output',
                                  help='Output directory (default: ./output)')
+
+    # Serve command (FastAPI server)
+    serve_parser = subparsers.add_parser('serve', help='Start API server (for Kubernetes deployment)')
+    serve_parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
+    serve_parser.add_argument('--port', type=int, default=8000, help='Port to bind to (default: 8000)')
+    serve_parser.add_argument('--reload', action='store_true', help='Enable auto-reload (development only)')
     
     args = parser.parse_args()
-    
+
     if not args.command:
         parser.print_help()
         sys.exit(1)
-    
-    if args.command == 'converge':
+
+    if args.command == 'serve':
+        # Start FastAPI server
+        if not FASTAPI_AVAILABLE:
+            print("Error: FastAPI not installed. Install with: pip install fastapi uvicorn")
+            sys.exit(1)
+
+        print(f"🚀 Starting AI Council API server on {args.host}:{args.port}")
+        print(f"📊 Health check: http://{args.host}:{args.port}/health")
+        print(f"📝 API docs: http://{args.host}:{args.port}/docs")
+        print(f"🤖 LLM Provider: Auto-detected from environment variables")
+        print()
+
+        uvicorn.run(
+            "aicouncil:app",
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            log_level="info"
+        )
+
+    elif args.command == 'converge':
         # Parse models
         models = [m.strip() for m in args.models.split(',')]
-        
+
         # Validate models
         if len(models) < 2:
             print("Error: At least 2 models required (1 proposer + 1 critic minimum)")
             sys.exit(1)
-        
+
         # Check for duplicate models
         if len(models) != len(set(models)):
             print("Error: Duplicate model names detected. Each model must be unique.")
             sys.exit(1)
-        
+
         # Create engine and run
         engine = ConvergenceEngine(
             models=models,
             max_iterations=args.max_iterations,
             output_dir=args.output
         )
-        
+
         try:
             engine.converge(args.input_file)
         except KeyboardInterrupt:
