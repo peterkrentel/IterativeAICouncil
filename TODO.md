@@ -49,43 +49,69 @@ Added HTTP API server for Kubernetes deployment:
 - ✅ Auto-reload support for development
 - ✅ Proper error handling and HTTP status codes
 
+### 3. Added Test Workflow ✅
+
+**Status:** COMPLETE
+
+Added GitHub Actions workflow for automated testing:
+- ✅ `.github/workflows/00-test.yml` - Comprehensive test suite
+- ✅ Lint and validate Python code
+- ✅ Test CLI mode with mock provider
+- ✅ Test server mode with mock provider
+- ✅ Test Docker build and container health
+- ✅ Runs automatically on every PR and push
+- ✅ No local setup required - everything runs in CI/CD
+
 ---
 
 ## 🚧 TODO (To Deploy)
 
-### 1. Test Locally (Recommended)
+### 1. Run Tests via GitHub Actions (Automated)
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+**No local setup required!** Tests run automatically in CI/CD.
 
-# Set environment variables
-export GROQ_API_KEY="your-groq-api-key"
-export GOOGLE_API_KEY="your-google-api-key"
+**Automatic triggers:**
+- Every PR → Runs test workflow
+- Every push to main → Runs test workflow
 
-# Test CLI mode
-python aicouncil.py converge sample_input.md --models critic1,critic2
+**Manual trigger:**
+- Go to Actions tab → "00 - Test Application" → Run workflow
 
-# Test server mode
-python aicouncil.py serve --port 8000
+**What gets tested:**
+- ✅ Python syntax validation
+- ✅ CLI mode with mock provider
+- ✅ Server mode with mock provider
+- ✅ Docker build and health check
+- ✅ API endpoints (/health, /converge)
 
-# In another terminal, test the API:
-curl http://localhost:8000/health
-curl -X POST http://localhost:8000/converge \
-  -H "Content-Type: application/json" \
-  -d '{"content": "# Test\nSome content", "models": ["critic1", "critic2"]}'
-```
-
-### 2. Deploy to AWS
+### 2. Deploy to AWS (Fully Automated)
 
 Follow [QUICKSTART.md](QUICKSTART.md):
 
-1. Run bootstrap script locally (one-time setup)
-2. Add GitHub secrets
-3. Run "Terraform Apply" workflow
-4. Add EC2_SSH_PRIVATE_KEY secret
-5. Run "Build and Deploy" workflow
-6. Test: `curl http://EC2_IP/health`
+1. **One-time local setup** (5 min)
+   ```bash
+   ./scripts/bootstrap.sh
+   ```
+
+2. **Add GitHub secrets** (5 min)
+   - `AWS_ACCOUNT_ID`
+   - `AWS_REGION`
+   - `GROQ_API_KEY` (from https://console.groq.com/keys)
+   - `GOOGLE_API_KEY` (from https://aistudio.google.com/app/apikey)
+
+3. **Deploy via GitHub Actions** (10 min)
+   - Run "Terraform Apply" workflow (manual trigger)
+   - Run "Build and Deploy" workflow (auto on push)
+
+4. **Verify deployment**
+   ```bash
+   curl http://EC2_IP/health
+   curl -X POST http://EC2_IP/converge \
+     -H "Content-Type: application/json" \
+     -d '{"content": "# Test", "models": ["critic1", "critic2"]}'
+   ```
+
+**Total time: ~20 minutes**
 
 ---
 
@@ -148,46 +174,41 @@ Follow [QUICKSTART.md](QUICKSTART.md):
 
 **The app is now FULLY FUNCTIONAL! 🎉**
 
-### Option 1: Test Locally (Recommended First)
+**Everything runs in GitHub Actions - no local setup required!**
+
+### Step 1: Run Automated Tests (Optional but Recommended)
+
+Tests run automatically on every PR/push, but you can also trigger manually:
+
+1. Go to GitHub Actions tab
+2. Select "00 - Test Application"
+3. Click "Run workflow"
+4. Wait ~5 minutes for results
+
+**What gets tested:**
+- Python syntax validation
+- CLI mode with mock provider
+- Server mode with mock provider
+- Docker build and health check
+- API endpoints
+
+### Step 2: Deploy to AWS
 
 ```bash
-# 1. Install dependencies (2 min)
-pip install -r requirements.txt
-
-# 2. Get API keys (5 min)
-# - Groq: https://console.groq.com/keys
-# - Gemini: https://aistudio.google.com/app/apikey
-
-# 3. Set environment variables
-export GROQ_API_KEY="your-key-here"
-export GOOGLE_API_KEY="your-key-here"
-
-# 4. Test CLI mode (2 min)
-python aicouncil.py converge sample_input.md --models critic1,critic2
-
-# 5. Test server mode (2 min)
-python aicouncil.py serve
-# In another terminal:
-curl http://localhost:8000/health
-```
-
-**Total time: ~10 minutes**
-
-### Option 2: Deploy to AWS (After Local Testing)
-
-```bash
-# 1. Run bootstrap script (5 min)
+# 1. Run bootstrap script (5 min) - ONLY local step
 ./scripts/bootstrap.sh
 
 # 2. Add GitHub secrets (5 min)
-# Follow instructions from bootstrap script output
+# Copy values from bootstrap script output to GitHub repo settings
 
-# 3. Run workflows (10 min)
-# - Terraform Apply (manual trigger)
-# - Build and Deploy (auto after merge)
+# 3. Run workflows via GitHub Actions (10 min)
+# - Go to Actions tab
+# - Run "Terraform Apply" workflow (manual trigger)
+# - Run "Build and Deploy" workflow (auto on push to main)
 
-# 4. Test deployment
+# 4. Test deployment (1 min)
 curl http://EC2_IP/health
+curl http://EC2_IP/docs  # Swagger UI
 ```
 
 **Total time: ~20 minutes**

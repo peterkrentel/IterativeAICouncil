@@ -63,40 +63,29 @@ python aicouncil.py serve --host 0.0.0.0 --port 8000 --reload
 
 ## How to Use
 
-### Option 1: Local CLI Mode
+### Automated Testing (GitHub Actions)
+
+**No local setup required!** Tests run automatically:
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Tests run automatically on:
+# - Every PR
+# - Every push to main
 
-# Set API keys
-export GROQ_API_KEY="your-groq-key"
-export GOOGLE_API_KEY="your-google-key"
-
-# Run convergence
-python aicouncil.py converge sample_input.md --models critic1,critic2 --max-iterations 5
+# Or trigger manually:
+# 1. Go to GitHub Actions tab
+# 2. Select "00 - Test Application"
+# 3. Click "Run workflow"
 ```
 
-### Option 2: Local Server Mode
+**What gets tested:**
+- Python syntax validation
+- CLI mode with mock provider
+- Server mode with mock provider
+- Docker build and health check
+- API endpoints (/health, /converge)
 
-```bash
-# Start server
-python aicouncil.py serve --port 8000
-
-# Test health endpoint
-curl http://localhost:8000/health
-
-# Run convergence via API
-curl -X POST http://localhost:8000/converge \
-  -H "Content-Type: application/json" \
-  -d '{
-    "content": "# My Document\nSome content here",
-    "models": ["critic1", "critic2"],
-    "max_iterations": 5
-  }'
-```
-
-### Option 3: Deploy to AWS
+### Deploy to AWS (Fully Automated)
 
 ```bash
 # 1. Run bootstrap script (one-time setup)
