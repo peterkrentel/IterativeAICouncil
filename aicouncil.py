@@ -1253,47 +1253,84 @@ Provide the improved version:"""
     
     def _call_critic_llm(self, critic: str, artifact: Artifact, iteration_num: int) -> List[Critique]:
         """
-        Placeholder for critic LLM API call.
-        
-        In a real implementation, this would call the actual LLM API
-        to generate structured critiques in JSON format.
+        Call LLM API to generate structured critiques.
+
+        Args:
+            critic: Name of the critic model
+            artifact: Current artifact
+            iteration_num: Current iteration number
+
+        Returns:
+            List of Critique objects
         """
-        print(f"    [PLACEHOLDER] Calling {critic} LLM for critique...")
-        
-        # Mock critiques based on critic name
-        mock_critiques = []
-        
-        if 'gpt' in critic.lower():
-            mock_critiques.append(Critique(
-                critic=critic,
-                category='simplicity',
-                severity=2,
-                location='line 10-20',
-                description='Code could be more concise',
-                suggested_change='Refactor complex logic into smaller functions'
-            ))
-        
-        if 'copilot' in critic.lower():
-            mock_critiques.append(Critique(
-                critic=critic,
-                category='bug-risk',
-                severity=3,
-                location='function parse_input',
-                description='Missing input validation',
-                suggested_change='Add validation for edge cases and null inputs'
-            ))
-        
-        if 'augment' in critic.lower() or 'claude' in critic.lower():
-            mock_critiques.append(Critique(
-                critic=critic,
-                category='security',
-                severity=4,
-                location='authentication section',
-                description='Potential security vulnerability in auth flow',
-                suggested_change='Implement rate limiting and secure token storage'
-            ))
-        
-        return mock_critiques
+        print(f"    🤖 Calling {self.llm_provider.get_name()} for critique...")
+
+        messages = [
+            {
+                "role": "system",
+                "content": """You are an expert code reviewer. Analyze the artifact and provide structured critiques.
+
+Return your response as a JSON array of critique objects with this exact format:
+[
+  {
+    "category": "architecture|performance|security|simplicity|bug-risk|style",
+    "severity": 1-5,
+    "location": "specific location in artifact",
+    "description": "clear description of the issue",
+    "suggested_change": "specific suggestion for improvement"
+  }
+]
+
+Focus on actionable, high-value feedback. If the artifact is good, return an empty array []."""
+            },
+            {
+                "role": "user",
+                "content": f"""Review this artifact and provide structured critiques:
+
+{artifact.content}
+
+Return JSON array of critiques:"""
+            }
+        ]
+
+        try:
+            response = self.llm_provider.chat(messages, temperature=0.3)
+
+            # Extract JSON from response (handle markdown code blocks)
+            json_str = response.strip()
+            if "```json" in json_str:
+                json_str = json_str.split("```json")[1].split("```")[0].strip()
+            elif "```" in json_str:
+                json_str = json_str.split("```")[1].split("```")[0].strip()
+
+            # Parse JSON
+            critiques_data = json.loads(json_str)
+
+            # Convert to Critique objects
+            critiques = []
+            for c in critiques_data:
+                try:
+                    critique = Critique(
+                        critic=critic,
+                        category=c.get('category', 'style'),
+                        severity=int(c.get('severity', 3)),
+                        location=c.get('location'),
+                        description=c.get('description', ''),
+                        suggested_change=c.get('suggested_change', '')
+                    )
+                    critiques.append(critique)
+                except Exception as e:
+                    print(f"    ⚠ Skipping invalid critique: {e}")
+
+            return critiques
+
+        except json.JSONDecodeError as e:
+            print(f"    ⚠ Failed to parse JSON from LLM response: {e}")
+            print(f"    Response was: {response[:200]}...")
+            return []
+        except Exception as e:
+            print(f"    ⚠ LLM API error: {e}")
+            return []
     
     def _apply_critiques_to_content(self, content: str, critiques: List[Critique]) -> str:
         """
@@ -1345,6 +1382,94 @@ Provide the improved version:"""
         return content + applied_notes
 
 
+# ============================================================================
+# FastAPI Server (for Kubernetes deployment)
+# ============================================================================
+
+if FASTAPI_AVAILABLE:
+    app = FastAPI(
+        title="AI Council API",
+        version="1.0.0",
+        description="Iterative artifact refinement using multiple AI models"
+    )
+
+    class ConvergeRequest(BaseModel):
+        """Request model for /converge endpoint."""
+        content: str
+        models: List[str] = ["critic1", "critic2"]
+        max_iterations: int = 5
+
+    class ConvergeResponse(BaseModel):
+        """Response model for /converge endpoint."""
+        status: str
+        final_content: str
+        iterations: int
+        convergence_reason: str
+        quality_score: float
+
+    @app.get("/health")
+    def health():
+        """Health check endpoint for Kubernetes liveness/readiness probes."""
+        return {
+            "status": "healthy",
+            "service": "aicouncil",
+            "version": "1.0.0"
+        }
+
+    @app.post("/converge", response_model=ConvergeResponse)
+    def converge_api(request: ConvergeRequest):
+        """
+        Run convergence engine via API.
+
+        Args:
+            request: ConvergeRequest with content, models, and max_iterations
+
+        Returns:
+            ConvergeResponse with final content and metadata
+        """
+        try:
+            # Create temporary artifact
+            artifact = Artifact(
+                id="api-request",
+                version=1,
+                content=request.content,
+                history=[]
+            )
+
+            # Run convergence
+            engine = ConvergenceEngine(
+                models=request.models,
+                max_iterations=request.max_iterations,
+                output_dir="/tmp/aicouncil"
+            )
+
+            final_artifact = engine.converge(artifact)
+
+            # Determine convergence reason
+            if engine.iterations:
+                last_iteration = engine.iterations[-1]
+                if last_iteration.ship_it:
+                    convergence_reason = "All critics approved"
+                elif len(engine.iterations) >= request.max_iterations:
+                    convergence_reason = f"Reached max iterations ({request.max_iterations})"
+                else:
+                    convergence_reason = "Convergence criteria met"
+                quality_score = last_iteration.quality_score
+            else:
+                convergence_reason = "No iterations completed"
+                quality_score = 0.0
+
+            return ConvergeResponse(
+                status="success",
+                final_content=final_artifact.content,
+                iterations=len(engine.iterations),
+                convergence_reason=convergence_reason,
+                quality_score=quality_score
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -1355,48 +1480,75 @@ Examples:
   %(prog)s converge input.md --models gpt,copilot,augment
   %(prog)s converge design.md --models gpt,copilot,augment --max-iterations 4
   %(prog)s converge code.py --models claude,gpt --output ./results
+  %(prog)s serve --port 8000
         """
     )
-    
+
     subparsers = parser.add_subparsers(dest='command', help='Commands')
-    
+
     # Converge command
     converge_parser = subparsers.add_parser('converge', help='Run convergence process on an artifact')
     converge_parser.add_argument('input_file', help='Input artifact file (Markdown or code)')
-    converge_parser.add_argument('--models', required=True, 
+    converge_parser.add_argument('--models', required=True,
                                  help='Comma-separated list of models (e.g., gpt,copilot,augment)')
     converge_parser.add_argument('--max-iterations', type=int, default=5,
                                  help='Maximum number of iterations (default: 5)')
     converge_parser.add_argument('--output', default='./output',
                                  help='Output directory (default: ./output)')
+
+    # Serve command (FastAPI server)
+    serve_parser = subparsers.add_parser('serve', help='Start API server (for Kubernetes deployment)')
+    serve_parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
+    serve_parser.add_argument('--port', type=int, default=8000, help='Port to bind to (default: 8000)')
+    serve_parser.add_argument('--reload', action='store_true', help='Enable auto-reload (development only)')
     
     args = parser.parse_args()
-    
+
     if not args.command:
         parser.print_help()
         sys.exit(1)
-    
-    if args.command == 'converge':
+
+    if args.command == 'serve':
+        # Start FastAPI server
+        if not FASTAPI_AVAILABLE:
+            print("Error: FastAPI not installed. Install with: pip install fastapi uvicorn")
+            sys.exit(1)
+
+        print(f"🚀 Starting AI Council API server on {args.host}:{args.port}")
+        print(f"📊 Health check: http://{args.host}:{args.port}/health")
+        print(f"📝 API docs: http://{args.host}:{args.port}/docs")
+        print(f"🤖 LLM Provider: Auto-detected from environment variables")
+        print()
+
+        uvicorn.run(
+            "aicouncil:app",
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            log_level="info"
+        )
+
+    elif args.command == 'converge':
         # Parse models
         models = [m.strip() for m in args.models.split(',')]
-        
+
         # Validate models
         if len(models) < 2:
             print("Error: At least 2 models required (1 proposer + 1 critic minimum)")
             sys.exit(1)
-        
+
         # Check for duplicate models
         if len(models) != len(set(models)):
             print("Error: Duplicate model names detected. Each model must be unique.")
             sys.exit(1)
-        
+
         # Create engine and run
         engine = ConvergenceEngine(
             models=models,
             max_iterations=args.max_iterations,
             output_dir=args.output
         )
-        
+
         try:
             engine.converge(args.input_file)
         except KeyboardInterrupt:

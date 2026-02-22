@@ -1,0 +1,203 @@
+name: "00 - Test Application"
+
+on:
+  pull_request:
+    paths:
+      - 'aicouncil.py'
+      - 'requirements.txt'
+      - 'Dockerfile'
+      - '.github/workflows/00-test.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'aicouncil.py'
+      - 'requirements.txt'
+      - 'Dockerfile'
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Test mode (mock or real)'
+        required: false
+        default: 'mock'
+        type: choice
+        options:
+          - mock
+          - real
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint-and-validate:
+    name: Lint and Validate
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pylint black isort
+      
+      - name: Check code formatting (black)
+        run: black --check aicouncil.py || true
+      
+      - name: Check import sorting (isort)
+        run: isort --check-only aicouncil.py || true
+      
+      - name: Lint with pylint
+        run: pylint aicouncil.py --disable=all --enable=E,F || true
+      
+      - name: Validate Python syntax
+        run: python -m py_compile aicouncil.py
+
+  test-cli-mock:
+    name: Test CLI (Mock Provider)
+    runs-on: ubuntu-latest
+    needs: lint-and-validate
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Test CLI help
+        run: python aicouncil.py --help
+      
+      - name: Test converge command help
+        run: python aicouncil.py converge --help
+      
+      - name: Test serve command help
+        run: python aicouncil.py serve --help
+      
+      - name: Test CLI with mock provider
+        run: |
+          python aicouncil.py converge sample_input.md \
+            --models critic1,critic2 \
+            --max-iterations 2 \
+            --output ./test_output
+      
+      - name: Verify output files
+        run: |
+          ls -la test_output/
+          test -f test_output/final_artifact.md
+          test -f test_output/telemetry.jsonl
+          echo "✅ Output files created successfully"
+
+  test-server-mock:
+    name: Test Server (Mock Provider)
+    runs-on: ubuntu-latest
+    needs: lint-and-validate
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Start server in background
+        run: |
+          python aicouncil.py serve --port 8000 &
+          SERVER_PID=$!
+          echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+          echo "Started server with PID: $SERVER_PID"
+      
+      - name: Wait for server to start
+        run: |
+          echo "Waiting for server to start..."
+          for i in {1..30}; do
+            if curl -f http://localhost:8000/health 2>/dev/null; then
+              echo "✅ Server is up!"
+              exit 0
+            fi
+            echo "Attempt $i/30: Server not ready yet..."
+            sleep 2
+          done
+          echo "❌ Server failed to start"
+          exit 1
+      
+      - name: Test health endpoint
+        run: |
+          response=$(curl -s http://localhost:8000/health)
+          echo "Health response: $response"
+          echo "$response" | jq -e '.status == "healthy"'
+          echo "✅ Health check passed"
+      
+      - name: Test API docs
+        run: |
+          curl -f http://localhost:8000/docs > /dev/null
+          echo "✅ API docs accessible"
+      
+      - name: Test converge endpoint
+        run: |
+          response=$(curl -s -X POST http://localhost:8000/converge \
+            -H "Content-Type: application/json" \
+            -d '{
+              "content": "# Test Document\n\nSome content here.",
+              "models": ["critic1", "critic2"],
+              "max_iterations": 2
+            }')
+          echo "Converge response: $response"
+          echo "$response" | jq -e '.status == "success"'
+          echo "✅ Converge endpoint works"
+      
+      - name: Stop server
+        if: always()
+        run: |
+          if [ ! -z "$SERVER_PID" ]; then
+            kill $SERVER_PID || true
+          fi
+
+  test-docker-build:
+    name: Test Docker Build
+    runs-on: ubuntu-latest
+    needs: lint-and-validate
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Build Docker image
+        run: docker build -t aicouncil:test .
+      
+      - name: Run container health check
+        run: |
+          docker run -d --name aicouncil-test -p 8000:8000 aicouncil:test
+          sleep 10
+          curl -f http://localhost:8000/health
+          echo "✅ Docker container health check passed"
+      
+      - name: Stop container
+        if: always()
+        run: docker stop aicouncil-test || true
+
