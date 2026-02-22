@@ -21,6 +21,169 @@ from datetime import datetime
 import difflib
 import shutil
 
+# LLM Provider imports
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+    print("Warning: groq package not installed. Install with: pip install groq")
+
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    print("Warning: google-generativeai package not installed. Install with: pip install google-generativeai")
+
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    print("Warning: requests package not installed. Install with: pip install requests")
+
+try:
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import JSONResponse
+    from pydantic import BaseModel
+    import uvicorn
+    FASTAPI_AVAILABLE = True
+except ImportError:
+    FASTAPI_AVAILABLE = False
+    print("Warning: fastapi/uvicorn not installed. Install with: pip install fastapi uvicorn")
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv is optional
+
+
+# ============================================================================
+# LLM Provider Classes
+# ============================================================================
+
+class LLMProvider:
+    """Base class for LLM providers."""
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """
+        Send a chat request to the LLM.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            temperature: Sampling temperature (0.0 to 1.0)
+
+        Returns:
+            Response text from the LLM
+        """
+        raise NotImplementedError("Subclasses must implement chat()")
+
+    def get_name(self) -> str:
+        """Get the provider name."""
+        raise NotImplementedError("Subclasses must implement get_name()")
+
+
+class GroqProvider(LLMProvider):
+    """Groq API provider (free tier: 14,400 requests/day)."""
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "llama-3.1-70b-versatile"):
+        self.api_key = api_key or os.getenv("GROQ_API_KEY")
+        self.model = model
+
+        if not self.api_key:
+            raise ValueError("GROQ_API_KEY not found in environment")
+
+        if not GROQ_AVAILABLE:
+            raise ImportError("groq package not installed. Install with: pip install groq")
+
+        self.client = Groq(api_key=self.api_key)
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """Call Groq API."""
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=4096
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            raise RuntimeError(f"Groq API error: {e}")
+
+    def get_name(self) -> str:
+        return f"Groq ({self.model})"
+
+
+class GeminiProvider(LLMProvider):
+    """Google Gemini API provider (free tier: 1,500 requests/day)."""
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-1.5-flash"):
+        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
+        self.model = model
+
+        if not self.api_key:
+            raise ValueError("GOOGLE_API_KEY not found in environment")
+
+        if not GEMINI_AVAILABLE:
+            raise ImportError("google-generativeai package not installed. Install with: pip install google-generativeai")
+
+        genai.configure(api_key=self.api_key)
+        self.client = genai.GenerativeModel(self.model)
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """Call Gemini API."""
+        try:
+            # Convert messages to Gemini format
+            # Gemini expects a single prompt or conversation history
+            prompt = self._convert_messages(messages)
+
+            response = self.client.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=4096
+                )
+            )
+            return response.text
+        except Exception as e:
+            raise RuntimeError(f"Gemini API error: {e}")
+
+    def _convert_messages(self, messages: List[Dict[str, str]]) -> str:
+        """Convert OpenAI-style messages to Gemini prompt."""
+        prompt_parts = []
+        for msg in messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+
+            if role == 'system':
+                prompt_parts.append(f"Instructions: {content}")
+            elif role == 'user':
+                prompt_parts.append(f"User: {content}")
+            elif role == 'assistant':
+                prompt_parts.append(f"Assistant: {content}")
+
+        return "\n\n".join(prompt_parts)
+
+    def get_name(self) -> str:
+        return f"Gemini ({self.model})"
+
+
+class MockProvider(LLMProvider):
+    """Mock provider for testing without API keys."""
+
+    def __init__(self, name: str = "Mock"):
+        self.name = name
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """Return mock response."""
+        return f"[Mock response from {self.name}]"
+
+    def get_name(self) -> str:
+        return self.name
+
 
 @dataclass
 class Artifact:
@@ -197,39 +360,67 @@ class ConvergenceEngine:
     
     VALID_CATEGORIES = ['architecture', 'performance', 'security', 'simplicity', 'bug-risk', 'style']
     
-    def __init__(self, models: List[str], max_iterations: int = 5, output_dir: str = "./output"):
+    def __init__(self, models: List[str], max_iterations: int = 5, output_dir: str = "./output",
+                 llm_provider: Optional[LLMProvider] = None):
         """
         Initialize the convergence engine.
-        
+
         Ensures deterministic model rotation and critic assignment.
-        
+
         Args:
             models: List of model names to use (minimum 2 required)
             max_iterations: Maximum number of iterations (default: 5)
             output_dir: Directory for output files
+            llm_provider: LLM provider to use (auto-detects if None)
         """
         # Assert minimum 2 models required
         assert len(models) >= 2, "At least 2 models required (1 proposer + 1 critic minimum)"
-        
+
         self.models = models
         self.max_iterations = max_iterations
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-        
+
         # Create diff_history directory
         self.diff_dir = self.output_dir / "diff_history"
         self.diff_dir.mkdir(exist_ok=True)
-        
+
         # Iteration tracking
         self.iterations: List[Iteration] = []
         self.current_iteration = 0
-        
+
         # Artifact
         self.artifact: Optional[Artifact] = None
-        
+
         # Telemetry file path
         self.telemetry_file = self.output_dir / "telemetry.jsonl"
-        
+
+        # Initialize LLM provider
+        self.llm_provider = llm_provider or self._auto_detect_provider()
+
+    def _auto_detect_provider(self) -> LLMProvider:
+        """Auto-detect and initialize LLM provider based on available API keys."""
+        # Try Groq first (fastest, good quality)
+        if os.getenv("GROQ_API_KEY"):
+            try:
+                print("🤖 Using Groq API (llama-3.1-70b-versatile)")
+                return GroqProvider()
+            except Exception as e:
+                print(f"⚠ Groq initialization failed: {e}")
+
+        # Try Gemini second (good quality, free tier)
+        if os.getenv("GOOGLE_API_KEY"):
+            try:
+                print("🤖 Using Google Gemini API (gemini-1.5-flash)")
+                return GeminiProvider()
+            except Exception as e:
+                print(f"⚠ Gemini initialization failed: {e}")
+
+        # Fall back to mock provider
+        print("⚠ No API keys found. Using mock provider.")
+        print("  Set GROQ_API_KEY or GOOGLE_API_KEY environment variable for real LLM.")
+        return MockProvider()
+
     def _log_telemetry(self, iteration: 'Iteration') -> None:
         """
         Append iteration telemetry to JSONL log file.
@@ -1006,19 +1197,59 @@ class ConvergenceEngine:
             print(f"Remaining issues: {len(self.iterations[-1].remaining_issues)}")
         print(f"Final version: {artifact.version}")
     
-    # Placeholder LLM functions
+    # LLM API functions
     def _call_proposer_llm(self, proposer: str, artifact: Artifact, iteration_num: int) -> str:
         """
-        Placeholder for proposer LLM API call.
-        
-        In a real implementation, this would call the actual LLM API
-        to generate a revised version of the artifact.
+        Call LLM API to generate a revised version of the artifact.
+
+        Args:
+            proposer: Name of the proposer model
+            artifact: Current artifact
+            iteration_num: Current iteration number
+
+        Returns:
+            Revised content from the LLM
         """
-        print(f"  [PLACEHOLDER] Calling {proposer} LLM for revision...")
-        
-        # Mock revision: add a comment indicating revision
-        revision_note = f"\n\n<!-- Revised by {proposer} in iteration {iteration_num} -->\n"
-        return artifact.content + revision_note
+        print(f"  🤖 Calling {self.llm_provider.get_name()} for revision...")
+
+        # Get previous critiques if any
+        critiques_summary = ""
+        if self.iterations:
+            last_iteration = self.iterations[-1]
+            if last_iteration.applied_critiques:
+                critiques_summary = "\n\nPrevious critiques to address:\n"
+                for critique in last_iteration.applied_critiques:
+                    critiques_summary += f"- [{critique.category}] {critique.description}\n"
+                    critiques_summary += f"  Suggested: {critique.suggested_change}\n"
+
+        messages = [
+            {
+                "role": "system",
+                "content": """You are an expert software architect and code reviewer.
+Your task is to improve the provided artifact by addressing the critiques.
+Maintain the original structure and intent while making improvements.
+Return ONLY the improved artifact content, no explanations."""
+            },
+            {
+                "role": "user",
+                "content": f"""Iteration {iteration_num}: Please improve this artifact.
+
+{critiques_summary}
+
+Current artifact:
+{artifact.content}
+
+Provide the improved version:"""
+            }
+        ]
+
+        try:
+            revised_content = self.llm_provider.chat(messages, temperature=0.7)
+            return revised_content.strip()
+        except Exception as e:
+            print(f"  ⚠ LLM API error: {e}")
+            print(f"  Falling back to original content")
+            return artifact.content
     
     def _call_critic_llm(self, critic: str, artifact: Artifact, iteration_num: int) -> List[Critique]:
         """

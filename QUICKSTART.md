@@ -1,204 +1,160 @@
-# Quick Start Guide
+# AI Council - Quick Start
 
-This guide will help you get IterativeAICouncil up and running quickly.
+Get your AI Council deployed to AWS in 15 minutes.
+
+## TL;DR
+
+```bash
+# 1. Bootstrap (run once locally)
+./scripts/bootstrap.sh
+
+# 2. Add secrets to GitHub (from bootstrap output)
+# Go to: Settings → Secrets → Actions
+
+# 3. Deploy infrastructure (GitHub Actions)
+# Actions → "Terraform Apply" → Type "apply" → Run
+
+# 4. Add EC2_SSH_PRIVATE_KEY secret (from Terraform outputs)
+
+# 5. Deploy app (GitHub Actions)
+# Actions → "Build and Deploy" → Run
+
+# 6. Test
+curl http://YOUR_EC2_IP/health
+```
 
 ## Prerequisites
 
-- Docker installed on your system
-- OpenAI API key (for ChatGPT agent)
-- Anthropic API key (for Claude agent)
+- AWS Account
+- GitHub Account
+- AWS CLI installed
+- 15 minutes
 
-## Setup Steps
+## Step-by-Step
 
-### 1. Clone the Repository
+### 1. Get API Keys (5 min)
 
-```bash
-git clone https://github.com/peterkrentel/IterativeAICouncil.git
-cd IterativeAICouncil
-```
+**Groq (Free):**
+1. Go to https://console.groq.com
+2. Sign up
+3. Create API key
+4. Copy it
 
-### 2. Configure API Keys
+**Google Gemini (Free):**
+1. Go to https://aistudio.google.com/app/apikey
+2. Sign in with Google
+3. Create API key
+4. Copy it
 
-Copy the example config file and add your API keys:
-
-```bash
-cp config.env.example config.env
-```
-
-Edit `config.env` and add your actual API keys:
-
-```bash
-OPENAI_KEY=sk-your-actual-openai-key-here
-CLAUDE_KEY=sk-ant-your-actual-claude-key-here
-```
-
-### 3. Create Your Initial Plan
-
-Edit the file `ai/01_plan.md` with your actual project plan. This is what the agents will review and refine.
-
-Example plan structure:
-
-```markdown
-# My Project Plan
-
-## Objectives
-- Build a web application for task management
-- Support multiple users
-- Mobile-responsive design
-
-## Requirements
-- User authentication
-- Task CRUD operations
-- Real-time updates
-...
-```
-
-### 4. Build the Docker Image
+### 2. Bootstrap AWS (2 min)
 
 ```bash
-docker build -t iterative-ai-council .
+# Configure AWS CLI
+aws configure
+
+# Run bootstrap
+cd /path/to/IterativeAICouncil
+chmod +x scripts/bootstrap.sh
+./scripts/bootstrap.sh
 ```
 
-This will create a Docker image with all dependencies installed.
+**Save the output!** You'll need it for GitHub secrets.
 
-### 5. Run the Orchestrator
+### 3. Add GitHub Secrets (3 min)
+
+Go to: `https://github.com/YOUR_USERNAME/IterativeAICouncil/settings/secrets/actions`
+
+Add these secrets (from bootstrap output):
+- `AWS_REGION`
+- `AWS_ROLE_ARN`
+- `TF_STATE_BUCKET`
+- `TF_LOCK_TABLE`
+- `GROQ_API_KEY`
+- `GOOGLE_API_KEY`
+
+### 4. Create Production Environment (1 min)
+
+Go to: `https://github.com/YOUR_USERNAME/IterativeAICouncil/settings/environments`
+
+1. Click "New environment"
+2. Name: `production`
+3. Add yourself as required reviewer
+4. Save
+
+### 5. Deploy Infrastructure (5 min)
+
+1. Go to Actions → "Terraform Apply"
+2. Click "Run workflow"
+3. Type `apply`
+4. Click "Run workflow"
+5. Approve when prompted
+6. Wait ~5 minutes
+
+**After completion:**
+1. Download `terraform-outputs` artifact
+2. Extract `ssh_private_key` from JSON
+3. Add as GitHub secret: `EC2_SSH_PRIVATE_KEY`
+
+### 6. Deploy Application (2 min)
+
+1. Go to Actions → "Build and Deploy"
+2. Click "Run workflow"
+3. Wait ~2 minutes
+
+### 7. Test It! (1 min)
 
 ```bash
-docker run --rm \
-  -v $(pwd)/ai:/app/ai \
-  --env-file config.env \
-  iterative-ai-council
+# Get your EC2 IP from Terraform outputs
+curl http://YOUR_EC2_IP/health
+
+# Should return: {"status": "healthy"}
 ```
 
-**What this does:**
-- `--rm` - Removes container after it exits
-- `-v $(pwd)/ai:/app/ai` - Mounts your local `ai/` directory so changes persist
-- `--env-file config.env` - Loads your API keys from config.env
-- `iterative-ai-council` - Runs the orchestrator
+## What You Just Built
 
-### 6. Review the Results
+- ✅ AWS EC2 instance with K3s (Kubernetes)
+- ✅ AI Council API running in container
+- ✅ Connected to free LLM APIs (Groq + Gemini)
+- ✅ Full CI/CD pipeline with GitHub Actions
+- ✅ Infrastructure as Code (Terraform)
+- ✅ Production-ready deployment
 
-After the orchestrator completes, check these files:
+## Cost
 
-- `ai/05_final.md` - Final refined plan
-- `ai/02_review_chatgpt.md` - ChatGPT's review
-- `ai/03_review_claude.md` - Claude's review
-- `ai/04_review_copilot.md` - Copilot agent's review
-- `ai/tradeoff_log.md` - Decision log
-
-## Running Without Docker
-
-If you prefer to run without Docker:
-
-### 1. Install Python Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Set Environment Variables
-
-```bash
-export OPENAI_KEY="your-key-here"
-export CLAUDE_KEY="your-key-here"
-```
-
-Or use a .env file with python-dotenv.
-
-### 3. Run the Orchestrator
-
-```bash
-cd agents
-python orchestrator.py
-```
-
-## Mock Mode (Testing Without API Keys)
-
-If you don't have API keys yet, the agents will run in **mock mode** and generate placeholder reviews. This is useful for:
-- Testing the system
-- Understanding the workflow
-- Development
-
-Simply run without setting the API keys and you'll see mock reviews generated.
-
-## Configuration Options
-
-You can customize the behavior using environment variables:
-
-```bash
-docker run --rm \
-  -v $(pwd)/ai:/app/ai \
-  --env-file config.env \
-  -e MAX_ITERATIONS=3 \
-  -e CURRENT_PHASE=1 \
-  iterative-ai-council
-```
-
-**Available options:**
-- `MAX_ITERATIONS` - Maximum refinement iterations (default: 5)
-- `CURRENT_PHASE` - Current project phase (default: 1)
-- `AI_DIR` - Directory for plan files (default: ./ai)
-
-## Troubleshooting
-
-### "No initial plan found"
-
-Make sure `ai/01_plan.md` exists and contains your plan before running the orchestrator.
-
-### API Errors
-
-- Verify your API keys are correct
-- Check that you have credits/quota available
-- Ensure your keys have the necessary permissions
-
-### Docker Volume Issues
-
-On Windows, use PowerShell and adjust the volume mount:
-
-```powershell
-docker run --rm `
-  -v ${PWD}/ai:/app/ai `
-  --env-file config.env `
-  iterative-ai-council
-```
+**Year 1:** $0-3/month (AWS free tier)
+**Year 2+:** ~$21/month (reserved instance)
+**LLMs:** $0/month (free tier)
 
 ## Next Steps
 
-1. Review the generated reviews and final plan
-2. Iterate on your plan based on feedback
-3. Run the orchestrator again with updated plan
-4. Continue until convergence is achieved
-5. Use the final plan for implementation
+- Read [DEPLOYMENT.md](DEPLOYMENT.md) for full details
+- Read [README.md](README.md) for API usage
+- Try the API: `curl http://YOUR_EC2_IP/docs`
 
-## Advanced Usage
+## Troubleshooting
 
-### Custom Agent Behavior
+**Workflow fails?**
+- Check GitHub secrets are correct
+- Verify AWS CLI is configured: `aws sts get-caller-identity`
 
-You can modify the agent scripts in `agents/` to customize:
-- Review prompts
-- Convergence criteria
-- Feedback merging logic
-- Phase management rules
+**Can't connect to EC2?**
+- Wait 5 minutes for K3s to install
+- Check security group allows your IP
 
-### Integration with CI/CD
+**Application not responding?**
+- Check logs: `kubectl logs -f deployment/aicouncil`
+- Verify API keys are set correctly
 
-You can integrate this into your CI/CD pipeline:
+## Destroy Everything
 
-```yaml
-# Example GitHub Actions workflow
-- name: Refine Plan
-  run: |
-    docker run --rm \
-      -v ${{ github.workspace }}/ai:/app/ai \
-      -e OPENAI_KEY=${{ secrets.OPENAI_KEY }} \
-      -e CLAUDE_KEY=${{ secrets.CLAUDE_KEY }} \
-      iterative-ai-council
-```
+When you're done:
 
-### Using with LangChain/AutoGen
+1. Go to Actions → "Destroy Infrastructure"
+2. Type `destroy`
+3. Run workflow
 
-The agent architecture is designed to be upgraded to frameworks like LangChain or AutoGen without changing the orchestrator. Simply replace the agent implementations while maintaining the same interface.
+**Total cleanup time:** 2 minutes
 
-## Support
+---
 
-For issues or questions, please open an issue on GitHub.
+**Questions?** See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed guide.

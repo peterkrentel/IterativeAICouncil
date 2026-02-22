@@ -1,11 +1,48 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
 *.egg-info/
 dist/
 build/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Environment
+.env
+*.pem
+*.key
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/.terraform.lock.hcl
+terraform/backend-config.tfvars
+terraform-outputs.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kubernetes
+kubeconfig
+k8s/secrets.yaml
+
+# Logs
 *.log
+logs/
 test_output/
