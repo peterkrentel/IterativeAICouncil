@@ -1011,12 +1011,15 @@ class ConvergenceEngine:
         print(f"✓ Diff history: {self.diff_dir}/")
     
     # Main convergence loop
-    def converge(self, input_file: str) -> None:
+    def converge(self, input_file: str) -> Artifact:
         """
         Run the complete convergence process.
-        
+
         Args:
             input_file: Path to input artifact file
+
+        Returns:
+            The final converged artifact
         """
         print(f"\n{'='*60}")
         print("AI Council Convergence Engine")
@@ -1196,7 +1199,182 @@ class ConvergenceEngine:
             print(f"Final improvement delta: {self.iterations[-1].improvement_delta:+.1f}")
             print(f"Remaining issues: {len(self.iterations[-1].remaining_issues)}")
         print(f"Final version: {artifact.version}")
-    
+
+        return artifact
+
+    def converge_artifact(self, artifact: Artifact) -> Artifact:
+        """
+        Run the complete convergence process on an existing artifact.
+
+        This is a variant of converge() that accepts an Artifact object directly
+        instead of loading from a file. Useful for API endpoints.
+
+        Args:
+            artifact: The artifact to converge
+
+        Returns:
+            The final converged artifact
+        """
+        print(f"\n{'='*60}")
+        print("AI Council Convergence Engine")
+        print(f"{'='*60}")
+        print(f"Models: {', '.join(self.models)}")
+        print(f"Max iterations: {self.max_iterations}")
+        print(f"Output directory: {self.output_dir}")
+
+        # Main iteration loop
+        for iteration_num in range(1, self.max_iterations + 1):
+            self.current_iteration = iteration_num
+
+            print(f"\n{'#'*60}")
+            print(f"# ITERATION {iteration_num}/{self.max_iterations}")
+            print(f"{'#'*60}")
+
+            # Rotate models: first model is proposer, rest are critics
+            proposer_idx = (iteration_num - 1) % len(self.models)
+            proposer = self.models[proposer_idx]
+            critics = [m for i, m in enumerate(self.models) if i != proposer_idx]
+
+            print(f"\nRoles for this iteration:")
+            print(f"  Proposer: {proposer}")
+            print(f"  Critics: {', '.join(critics)}")
+
+            # Create iteration object with timestamp
+            iteration = Iteration(
+                iteration_number=iteration_num,
+                proposer=proposer,
+                critics=critics,
+                timestamp=datetime.now().isoformat()
+            )
+
+            # Save previous content for diff
+            previous_content = artifact.content
+
+            # STATE 1: Run proposer
+            revised_content = self.run_proposer(proposer, artifact, iteration_num)
+
+            # Temporarily update artifact for critics to review
+            # Use deep copy of history to prevent mutation
+            import copy
+            temp_artifact = Artifact(
+                id=artifact.id,
+                version=artifact.version,
+                content=revised_content,
+                history=copy.deepcopy(artifact.history)
+            )
+
+            # STATE 2: Run critics (auto-approve for API mode)
+            critiques = self.run_critics(critics, temp_artifact, iteration_num)
+            iteration.critiques_received = critiques
+
+            # STATE 3: Consolidate critiques
+            consolidated_critiques = self.consolidate_critiques(critiques)
+
+            # STATE 4: Auto-approve for API mode (no human gate)
+            # Apply all critiques automatically
+            approved = consolidated_critiques
+            rejected = []
+            iteration.applied_critiques = approved
+            iteration.rejected_critiques = rejected
+            iteration.human_choice = 'auto'
+            iteration.human_override = 'accepted'
+
+            print(f"\n📝 Auto-approved (API mode):")
+            print(f"  Applied: {len(approved)} critique(s)")
+
+            # STATE 5: Apply critiques
+            if approved:
+                # Apply to revised content
+                final_content = self._apply_critiques_to_content(revised_content, approved)
+            else:
+                # No critiques applied, use revised content as-is
+                final_content = revised_content
+
+            # Update artifact using apply_change to maintain history consistency
+            change_description = f"Iteration {iteration_num}: Proposer={proposer}, Applied {len(approved)} critique(s)"
+            artifact.apply_change(change_description, final_content)
+
+            # Calculate diff once for both saving and convergence check
+            diff_ratio = self._calculate_diff_ratio(previous_content, artifact.content)
+
+            # Save diff
+            self.save_diff(iteration_num, previous_content, artifact.content)
+            iteration.diff_summary = f"Changed {diff_ratio*100:.2f}% of content"
+
+            # STATE 6: Check convergence
+            # Check all critiques that weren't applied (both rejected and high-severity ones)
+            unapplied_critiques = rejected
+            has_converged, score, reason, critic_statuses, ship_it, quality_score, remaining_issues = self.check_convergence(
+                unapplied_critiques, artifact, previous_content, diff_ratio, critics
+            )
+            iteration.convergence_score = score
+            iteration.quality_score = quality_score
+            iteration.remaining_issues = remaining_issues
+            iteration.critic_statuses = critic_statuses
+            iteration.ship_it = ship_it
+
+            # Calculate improvement delta (quality improvement from previous iteration)
+            if self.iterations:
+                prev_quality = self.iterations[-1].quality_score
+                iteration.improvement_delta = quality_score - prev_quality
+            else:
+                iteration.improvement_delta = quality_score  # First iteration baseline
+
+            print(f"Improvement delta: {iteration.improvement_delta:+.1f}")
+
+            self.iterations.append(iteration)
+
+            # Log telemetry after iteration is complete
+            self._log_telemetry(iteration)
+
+            # Anti-loop protection: Check for minimal improvement
+            if (len(self.iterations) >= 2 and
+                abs(iteration.improvement_delta) < 0.1 and
+                len(remaining_issues) == 0):
+                print("\n⚠ Minimal improvement with no remaining issues - triggering convergence")
+                has_converged = True
+                reason = "No meaningful improvement and no actionable issues"
+
+            if has_converged:
+                print(f"\n✓ Convergence achieved: {reason}")
+                break
+
+        # Save outputs
+        self.save_outputs()
+
+        # Determine final status
+        if not self.iterations:
+            final_status = "BLOCKED"
+            convergence_reason = "No iterations completed"
+        else:
+            last_iteration = self.iterations[-1]
+            if last_iteration.ship_it:
+                final_status = "CONVERGED"
+                convergence_reason = "All critics approved"
+            elif self.current_iteration >= self.max_iterations:
+                final_status = "MAX_ITERATIONS"
+                convergence_reason = f"Reached max iterations ({self.max_iterations})"
+            elif len(last_iteration.remaining_issues) == 0:
+                final_status = "CONVERGED"
+                convergence_reason = "No actionable issues remaining"
+            else:
+                final_status = "CONVERGED"
+                convergence_reason = "Convergence criteria met"
+
+        print(f"\n{'='*60}")
+        print("Convergence Complete!")
+        print(f"{'='*60}")
+        print(f"Final Status: {final_status}")
+        print(f"Reason: {convergence_reason}")
+        print(f"Total iterations: {len(self.iterations)}")
+        if self.iterations:
+            print(f"Final quality score: {self.iterations[-1].quality_score:.1f}/100")
+            print(f"Final improvement delta: {self.iterations[-1].improvement_delta:+.1f}")
+            print(f"Remaining issues: {len(self.iterations[-1].remaining_issues)}")
+        print(f"Final version: {artifact.version}")
+
+        return artifact
+
     # LLM API functions
     def _call_proposer_llm(self, proposer: str, artifact: Artifact, iteration_num: int) -> str:
         """
@@ -1443,7 +1621,7 @@ if FASTAPI_AVAILABLE:
                 output_dir="/tmp/aicouncil"
             )
 
-            final_artifact = engine.converge(artifact)
+            final_artifact = engine.converge_artifact(artifact)
 
             # Determine convergence reason
             if engine.iterations:
