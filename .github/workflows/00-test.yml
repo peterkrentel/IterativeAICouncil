@@ -101,7 +101,7 @@ jobs:
       - name: Verify output files
         run: |
           ls -la test_output/
-          test -f test_output/final_artifact.md
+          test -f test_output/sample_input_final.md
           test -f test_output/telemetry.jsonl
           echo "✅ Output files created successfully"
 
