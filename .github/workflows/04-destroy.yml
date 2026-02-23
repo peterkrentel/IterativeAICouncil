@@ -40,7 +40,7 @@ jobs:
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=aicouncil/terraform.tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            -backend-config="dynamodb_table=" \
             -backend-config="encrypt=true"
 
       - name: Terraform Destroy
@@ -53,8 +53,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "All AWS resources have been removed." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⚠️ **Note:** The S3 bucket and DynamoDB table for Terraform state are NOT deleted." >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **Note:** The S3 bucket for Terraform state is NOT deleted." >> $GITHUB_STEP_SUMMARY
           echo "If you want to completely clean up, manually delete:" >> $GITHUB_STEP_SUMMARY
           echo "- S3 bucket: \`${{ secrets.TF_STATE_BUCKET }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- DynamoDB table: \`${{ secrets.TF_LOCK_TABLE }}\`" >> $GITHUB_STEP_SUMMARY
 
