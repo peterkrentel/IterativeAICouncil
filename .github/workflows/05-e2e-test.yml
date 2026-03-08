@@ -32,24 +32,103 @@ jobs:
       - name: Terraform Init (Local State)
         working-directory: terraform
         run: |
+          echo "========================================="
+          echo "🎓 LEARNING: Terraform Initialization"
+          echo "========================================="
+          echo "What: Initialize Terraform with LOCAL state (not S3)"
+          echo "Why: E2E tests are ephemeral - we don't need persistent state"
+          echo "How: Temporarily rename backend.tf to disable S3 backend"
+          echo ""
+
           # Use local state for ephemeral E2E testing
           # Temporarily remove backend configuration to use local state
+          echo "📝 Disabling S3 backend..."
           mv backend.tf backend.tf.bak
+          echo "✅ backend.tf → backend.tf.bak"
+          echo ""
+
+          echo "🔧 Running: terraform init"
           terraform init
+
+          echo ""
+          echo "✅ Terraform initialized with local state"
+          echo ""
 
       - name: Terraform Apply
         working-directory: terraform
         run: |
+          echo "========================================="
+          echo "🏗️  CREATING INFRASTRUCTURE"
+          echo "========================================="
+          echo "Project: aicouncil-e2e (ephemeral)"
+          echo ""
+
           # Use different project name to avoid conflicts with manual deployment
           terraform apply -auto-approve -var="project_name=aicouncil-e2e"
 
-      - name: Get EC2 IP
+          echo ""
+          echo "✅ Infrastructure creation complete!"
+
+          # Verify outputs exist
+          if ! terraform output ec2_public_ip > /dev/null 2>&1; then
+            echo "❌ ERROR: Failed to get EC2 public IP from Terraform outputs"
+            exit 1
+          fi
+
+          if ! terraform output ecr_repository_url > /dev/null 2>&1; then
+            echo "❌ ERROR: Failed to get ECR repository URL from Terraform outputs"
+            exit 1
+          fi
+
+          echo "✅ Terraform outputs validated"
+
+      - name: Get EC2 IP and Verify Instance
         id: get-ip
         working-directory: terraform
         run: |
+          echo "========================================="
+          echo "📋 INFRASTRUCTURE DETAILS"
+          echo "========================================="
+
           EC2_IP=$(terraform output -raw ec2_public_ip)
+          ECR_URL=$(terraform output -raw ecr_repository_url)
+          INSTANCE_ID=$(terraform output -raw ec2_instance_id)
+
           echo "ec2_ip=$EC2_IP" >> $GITHUB_OUTPUT
-          echo "✅ EC2 Instance created at: $EC2_IP"
+          echo "ecr_url=$ECR_URL" >> $GITHUB_OUTPUT
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+          echo "✅ EC2 Instance ID: $INSTANCE_ID"
+          echo "✅ EC2 Public IP: $EC2_IP"
+          echo "✅ ECR Repository: $ECR_URL"
+          echo ""
+
+          # Verify EC2 instance is actually running
+          echo "🔍 Verifying EC2 instance state..."
+          INSTANCE_STATE=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query 'Reservations[0].Instances[0].State.Name' \
+            --output text)
+
+          echo "   Instance state: $INSTANCE_STATE"
+
+          if [ "$INSTANCE_STATE" != "running" ]; then
+            echo "❌ ERROR: Instance is not in 'running' state"
+            exit 1
+          fi
+
+          echo "✅ EC2 instance is running"
+          echo ""
+
+          # Verify ECR repository exists
+          echo "🔍 Verifying ECR repository..."
+          if aws ecr describe-repositories --repository-names aicouncil-e2e > /dev/null 2>&1; then
+            echo "✅ ECR repository exists"
+          else
+            echo "❌ ERROR: ECR repository not found"
+            exit 1
+          fi
+          echo ""
 
       # ========================================
       # STEP 2: Build and Push Docker Image
@@ -63,11 +142,69 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
+          echo "========================================="
+          echo "🐳 BUILDING DOCKER IMAGE"
+          echo "========================================="
+          echo "Repository: aicouncil-e2e"
+          echo "Tag: $IMAGE_TAG"
+          echo "Registry: $ECR_REGISTRY"
+          echo ""
+
+          echo "📦 Building image..."
           docker build -t $ECR_REGISTRY/aicouncil-e2e:$IMAGE_TAG .
+
+          if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Docker build failed"
+            exit 1
+          fi
+          echo "✅ Build successful"
+
+          echo ""
+          echo "⬆️  Pushing image with commit SHA tag..."
           docker push $ECR_REGISTRY/aicouncil-e2e:$IMAGE_TAG
+
+          if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Docker push failed for tag $IMAGE_TAG"
+            exit 1
+          fi
+          echo "✅ Push successful: $IMAGE_TAG"
+
+          echo ""
+          echo "🏷️  Tagging as 'latest'..."
           docker tag $ECR_REGISTRY/aicouncil-e2e:$IMAGE_TAG $ECR_REGISTRY/aicouncil-e2e:latest
+
+          echo ""
+          echo "⬆️  Pushing 'latest' tag..."
           docker push $ECR_REGISTRY/aicouncil-e2e:latest
-          echo "✅ Image pushed: $ECR_REGISTRY/aicouncil-e2e:$IMAGE_TAG"
+
+          if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Docker push failed for 'latest' tag"
+            exit 1
+          fi
+          echo "✅ Push successful: latest"
+
+          echo ""
+          echo "🔍 Verifying images in ECR..."
+
+          # Verify the image exists in ECR
+          IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name aicouncil-e2e \
+            --image-ids imageTag=$IMAGE_TAG \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+
+          if [ -z "$IMAGE_DIGEST" ] || [ "$IMAGE_DIGEST" == "None" ]; then
+            echo "❌ ERROR: Image not found in ECR"
+            exit 1
+          fi
+
+          echo "✅ Image verified in ECR"
+          echo "   Digest: $IMAGE_DIGEST"
+          echo ""
+          echo "✅ Docker image built and pushed successfully!"
+          echo "   - $ECR_REGISTRY/aicouncil-e2e:$IMAGE_TAG"
+          echo "   - $ECR_REGISTRY/aicouncil-e2e:latest"
+          echo ""
 
       # ========================================
       # STEP 3: Wait for EC2 to be ready
@@ -75,34 +212,252 @@ jobs:
       - name: Wait for EC2 to be ready
         env:
           EC2_IP: ${{ steps.get-ip.outputs.ec2_ip }}
+          INSTANCE_ID: ${{ steps.get-ip.outputs.instance_id }}
         run: |
-          echo "⏳ Waiting for EC2 instance to complete initialization..."
-          echo "This can take 3-5 minutes for K3s to install and start..."
-          
+          echo "========================================="
+          echo "⏳ WAITING FOR EC2 INITIALIZATION"
+          echo "========================================="
+          echo "Instance IP: $EC2_IP"
+          echo "Instance ID: $INSTANCE_ID"
+          echo ""
+          echo "This process includes:"
+          echo "  1. EC2 instance boot"
+          echo "  2. K3s installation (via user-data.sh)"
+          echo "  3. Docker image pull from ECR"
+          echo "  4. Kubernetes deployment"
+          echo ""
+          echo "Expected time: 3-5 minutes"
+          echo ""
+
           # Wait up to 10 minutes for SSH to be available
+          echo "🔍 Checking SSH availability..."
+          SSH_READY=false
           for i in {1..60}; do
             if nc -z -w5 $EC2_IP 22 2>/dev/null; then
-              echo "✅ SSH is available"
+              echo "✅ SSH is available (attempt $i/60)"
+              SSH_READY=true
               break
             fi
-            echo "Attempt $i/60: SSH not ready yet..."
+            echo "   Attempt $i/60: SSH not ready yet..."
             sleep 10
           done
-          
+
+          if [ "$SSH_READY" != "true" ]; then
+            echo "❌ ERROR: SSH never became available"
+            exit 1
+          fi
+
+          # Check if user-data script is still running
+          echo ""
+          echo "🔍 Checking if user-data initialization is complete..."
+          for i in {1..30}; do
+            # Check if cloud-init is done
+            CLOUD_INIT_STATUS=$(aws ssm send-command \
+              --instance-ids $INSTANCE_ID \
+              --document-name "AWS-RunShellScript" \
+              --parameters 'commands=["cloud-init status"]' \
+              --query 'Command.CommandId' \
+              --output text 2>/dev/null || echo "")
+
+            if [ -n "$CLOUD_INIT_STATUS" ]; then
+              sleep 5
+              INIT_OUTPUT=$(aws ssm get-command-invocation \
+                --command-id $CLOUD_INIT_STATUS \
+                --instance-id $INSTANCE_ID \
+                --query 'StandardOutputContent' \
+                --output text 2>/dev/null || echo "")
+
+              if echo "$INIT_OUTPUT" | grep -q "status: done"; then
+                echo "✅ Cloud-init completed (attempt $i/30)"
+                break
+              fi
+            fi
+
+            echo "   Attempt $i/30: Waiting for cloud-init to complete..."
+            sleep 10
+          done
+
           # Give K3s more time to fully initialize
+          echo ""
           echo "⏳ Waiting additional 2 minutes for K3s to fully initialize..."
+          echo "   (K3s installation, manifest application, pod startup)"
           sleep 120
+          echo "✅ Wait period complete"
+          echo ""
 
       # ========================================
-      # STEP 4: Deploy to K3s (via user-data or manual)
+      # STEP 4: Verify K3s Cluster
       # ========================================
-      - name: Check K3s Status
+      - name: Verify K3s Cluster Status
         env:
           EC2_IP: ${{ steps.get-ip.outputs.ec2_ip }}
+          INSTANCE_ID: ${{ steps.get-ip.outputs.instance_id }}
         run: |
-          echo "📊 Checking K3s status..."
-          # For now, we'll just wait - user-data should handle deployment
-          # In next iteration, we can add actual deployment logic here
+          echo "========================================="
+          echo "📊 VERIFYING K3S CLUSTER"
+          echo "========================================="
+          echo "Instance ID: $INSTANCE_ID"
+          echo ""
+          echo "🎓 LEARNING CHECKPOINT: K3s Cluster Verification"
+          echo "   - K3s is a lightweight Kubernetes distribution"
+          echo "   - We're using AWS SSM to run kubectl commands remotely"
+          echo "   - This verifies the cluster is healthy before testing our app"
+          echo ""
+          echo "📖 See docs/K3S_LEARNING_GUIDE.md for detailed explanations"
+          echo ""
+
+          echo "🔍 Step 1: Checking K3s node status..."
+          echo "   Command: kubectl get nodes -o wide"
+          echo "   What: Shows all nodes in the cluster and their status"
+          echo "   Expected: 1 node in 'Ready' state"
+          echo ""
+
+          # Send command to check K3s nodes
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids $INSTANCE_ID \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["sudo kubectl get nodes -o wide"]' \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "   SSM Command ID: $COMMAND_ID"
+          echo "   Waiting for command to complete..."
+          sleep 10
+
+          # Get command output
+          echo ""
+          echo "📋 K3s Nodes:"
+          echo "---"
+          NODE_OUTPUT=$(aws ssm get-command-invocation \
+            --command-id $COMMAND_ID \
+            --instance-id $INSTANCE_ID \
+            --query 'StandardOutputContent' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -z "$NODE_OUTPUT" ]; then
+            echo "⚠️  Could not retrieve node status (SSM may not be ready yet)"
+          else
+            echo "$NODE_OUTPUT"
+
+            # Verify node is Ready
+            if echo "$NODE_OUTPUT" | grep -q "Ready"; then
+              echo ""
+              echo "✅ K3s node is Ready"
+            else
+              echo ""
+              echo "❌ ERROR: K3s node is not Ready"
+              exit 1
+            fi
+          fi
+          echo "---"
+
+          echo ""
+          echo "🔍 Step 2: Checking all pods in cluster..."
+          echo "   Command: kubectl get pods -A"
+          echo "   What: Shows all pods across all namespaces"
+          echo "   Expected: System pods (kube-system) + our app pod (default)"
+          echo ""
+
+          # Send command to check pods
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids $INSTANCE_ID \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["sudo kubectl get pods -A -o wide"]' \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "   SSM Command ID: $COMMAND_ID"
+          echo "   Waiting for command to complete..."
+          sleep 10
+
+          # Get command output
+          echo ""
+          echo "📋 All Pods:"
+          echo "---"
+          POD_OUTPUT=$(aws ssm get-command-invocation \
+            --command-id $COMMAND_ID \
+            --instance-id $INSTANCE_ID \
+            --query 'StandardOutputContent' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -z "$POD_OUTPUT" ]; then
+            echo "⚠️  Could not retrieve pod status (SSM may not be ready yet)"
+          else
+            echo "$POD_OUTPUT"
+
+            # Check if our aicouncil pod exists
+            if echo "$POD_OUTPUT" | grep -q "aicouncil"; then
+              echo ""
+              echo "✅ AICouncil pod found"
+
+              # Check if pod is Running
+              if echo "$POD_OUTPUT" | grep "aicouncil" | grep -q "Running"; then
+                echo "✅ AICouncil pod is Running"
+              else
+                echo "⚠️  AICouncil pod exists but may not be Running yet"
+              fi
+            else
+              echo ""
+              echo "⚠️  AICouncil pod not found (may still be deploying)"
+            fi
+          fi
+          echo "---"
+
+          echo ""
+          echo "🔍 Step 3: Checking K3s services..."
+          echo "   Command: kubectl get svc -A"
+          echo "   What: Shows all services (network endpoints)"
+          echo "   Expected: NodePort service exposing our app on port 30080"
+          echo ""
+
+          # Send command to check services
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids $INSTANCE_ID \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["sudo kubectl get svc -A -o wide"]' \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "   SSM Command ID: $COMMAND_ID"
+          echo "   Waiting for command to complete..."
+          sleep 10
+
+          # Get command output
+          echo ""
+          echo "📋 Services:"
+          echo "---"
+          SVC_OUTPUT=$(aws ssm get-command-invocation \
+            --command-id $COMMAND_ID \
+            --instance-id $INSTANCE_ID \
+            --query 'StandardOutputContent' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -z "$SVC_OUTPUT" ]; then
+            echo "⚠️  Could not retrieve service status"
+          else
+            echo "$SVC_OUTPUT"
+
+            # Check if our NodePort service exists
+            if echo "$SVC_OUTPUT" | grep -q "NodePort"; then
+              echo ""
+              echo "✅ NodePort service found (exposes app on port 30080)"
+            else
+              echo ""
+              echo "⚠️  NodePort service not found"
+            fi
+          fi
+          echo "---"
+
+          echo ""
+          echo "✅ K3s cluster verification complete"
+          echo ""
+          echo "🎓 WHAT WE LEARNED:"
+          echo "   - K3s cluster is running on our EC2 instance"
+          echo "   - We can use 'kubectl' to inspect the cluster state"
+          echo "   - Pods are the smallest deployable units in Kubernetes"
+          echo "   - Services expose pods to network traffic"
+          echo "   - NodePort services expose apps on a specific port (30080)"
+          echo ""
 
       # ========================================
       # STEP 5: Wait for Application to be Ready
@@ -111,17 +466,44 @@ jobs:
         env:
           EC2_IP: ${{ steps.get-ip.outputs.ec2_ip }}
         run: |
-          echo "⏳ Waiting for application to be ready..."
+          echo "========================================="
+          echo "⏳ WAITING FOR APPLICATION"
+          echo "========================================="
+          echo "Endpoint: http://$EC2_IP:30080/health"
+          echo ""
+          echo "🎓 LEARNING: NodePort Service"
+          echo "   - Our app is exposed via Kubernetes NodePort service"
+          echo "   - Port 30080 is mapped to container port 8000"
+          echo "   - Traffic flow: External → NodePort (30080) → Service → Pod (8000)"
+          echo ""
 
           # Wait up to 5 minutes for the app to respond
+          echo "🔍 Polling health endpoint (max 5 minutes)..."
+          APP_READY=false
           for i in {1..30}; do
+            echo "   Attempt $i/30: curl -f http://$EC2_IP:30080/health"
             if curl -f -s http://$EC2_IP:30080/health > /dev/null 2>&1; then
               echo "✅ Application is responding!"
+              APP_READY=true
               break
             fi
-            echo "Attempt $i/30: Application not ready yet..."
+            echo "   → Not ready yet, waiting 10 seconds..."
             sleep 10
           done
+
+          if [ "$APP_READY" != "true" ]; then
+            echo ""
+            echo "❌ ERROR: Application never became ready"
+            echo "   This could mean:"
+            echo "   - Pod is not running"
+            echo "   - Service is not configured correctly"
+            echo "   - Application failed to start"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ Application is ready!"
+          echo ""
 
       # ========================================
       # STEP 6: Validate Deployment
@@ -130,30 +512,64 @@ jobs:
         env:
           EC2_IP: ${{ steps.get-ip.outputs.ec2_ip }}
         run: |
-          echo "🔍 Testing health endpoint..."
-          RESPONSE=$(curl -s http://$EC2_IP:30080/health)
-          echo "Response: $RESPONSE"
+          echo "========================================="
+          echo "🔍 VALIDATING HEALTH ENDPOINT"
+          echo "========================================="
+          echo "Endpoint: http://$EC2_IP:30080/health"
+          echo ""
+
+          echo "📡 Sending request..."
+          RESPONSE=$(curl -s -v http://$EC2_IP:30080/health 2>&1)
+
+          echo ""
+          echo "📋 Response:"
+          echo "---"
+          echo "$RESPONSE"
+          echo "---"
+          echo ""
 
           if echo "$RESPONSE" | grep -q "status"; then
             echo "✅ Health check passed!"
+            echo "   Response contains 'status' field"
           else
             echo "❌ Health check failed!"
+            echo "   Response does not contain expected 'status' field"
             exit 1
           fi
+          echo ""
 
       - name: Test API Docs
         env:
           EC2_IP: ${{ steps.get-ip.outputs.ec2_ip }}
         run: |
-          echo "🔍 Testing API docs endpoint..."
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$EC2_IP:30080/docs)
+          echo "========================================="
+          echo "🔍 VALIDATING API DOCS ENDPOINT"
+          echo "========================================="
+          echo "Endpoint: http://$EC2_IP:30080/docs"
+          echo ""
+          echo "🎓 LEARNING: FastAPI Auto-Generated Docs"
+          echo "   - FastAPI automatically generates interactive API docs"
+          echo "   - /docs → Swagger UI (interactive)"
+          echo "   - /redoc → ReDoc (alternative view)"
+          echo ""
 
-          if [ "$STATUS" = "200" ]; then
+          echo "📡 Sending request with verbose output..."
+          STATUS=$(curl -s -v -o /dev/null -w "%{http_code}" http://$EC2_IP:30080/docs 2>&1)
+
+          echo ""
+          echo "📋 HTTP Status Code: $STATUS"
+          echo ""
+
+          if echo "$STATUS" | grep -q "200"; then
             echo "✅ API docs accessible!"
+            echo "   You can view docs at: http://$EC2_IP:30080/docs"
           else
-            echo "❌ API docs returned status: $STATUS"
+            echo "❌ API docs returned unexpected status"
+            echo "   Expected: 200"
+            echo "   Got: $STATUS"
             exit 1
           fi
+          echo ""
 
       # ========================================
       # STEP 7: Cleanup - Destroy Infrastructure
@@ -162,10 +578,33 @@ jobs:
         if: always()
         working-directory: terraform
         run: |
-          echo "🧹 Cleaning up infrastructure..."
+          echo "========================================="
+          echo "🧹 CLEANING UP INFRASTRUCTURE"
+          echo "========================================="
+          echo "🎓 LEARNING: Ephemeral Infrastructure"
+          echo "   - E2E tests create temporary infrastructure"
+          echo "   - Always clean up to avoid costs"
+          echo "   - 'if: always()' ensures cleanup even if tests fail"
+          echo ""
+
+          echo "🗑️  Running: terraform destroy -auto-approve"
+          echo "   This will remove all 14 resources:"
+          echo "   - VPC, Subnet, Internet Gateway, Route Table"
+          echo "   - Security Group, EC2 Instance, Key Pair"
+          echo "   - ECR Repository, IAM Role, IAM Policy, IAM Instance Profile"
+          echo ""
+
           terraform destroy -auto-approve -var="project_name=aicouncil-e2e"
+
+          echo ""
+          echo "✅ All infrastructure destroyed"
+          echo ""
+
           # Restore backend configuration
+          echo "📝 Restoring backend.tf..."
           mv backend.tf.bak backend.tf || true
+          echo "✅ backend.tf.bak → backend.tf"
+          echo ""
 
       # ========================================
       # STEP 8: Summary
