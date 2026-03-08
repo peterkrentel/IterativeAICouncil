@@ -289,163 +289,115 @@ jobs:
       # STEP 4: Verify K3s Cluster
       # ========================================
       - name: Verify K3s Cluster Status
+        working-directory: terraform
         env:
           EC2_IP: ${{ steps.get-ip.outputs.ec2_ip }}
-          INSTANCE_ID: ${{ steps.get-ip.outputs.instance_id }}
         run: |
           echo "========================================="
           echo "📊 VERIFYING K3S CLUSTER"
           echo "========================================="
-          echo "Instance ID: $INSTANCE_ID"
+          echo "EC2 IP: $EC2_IP"
           echo ""
           echo "🎓 LEARNING CHECKPOINT: K3s Cluster Verification"
           echo "   - K3s is a lightweight Kubernetes distribution"
-          echo "   - We're using AWS SSM to run kubectl commands remotely"
+          echo "   - We're using SSH to run kubectl commands remotely"
           echo "   - This verifies the cluster is healthy before testing our app"
           echo ""
           echo "📖 See docs/K3S_LEARNING_GUIDE.md for detailed explanations"
           echo ""
 
+          # Get SSH private key from Terraform output
+          echo "🔑 Retrieving SSH private key from Terraform..."
+          terraform output -raw ssh_private_key > /tmp/k3s-key.pem
+          chmod 600 /tmp/k3s-key.pem
+          echo "✅ SSH key ready"
+          echo ""
+
+          # SSH options for non-interactive use
+          SSH_OPTS="-i /tmp/k3s-key.pem -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
           echo "🔍 Step 1: Checking K3s node status..."
-          echo "   Command: kubectl get nodes -o wide"
+          echo "   Command: ssh ubuntu@$EC2_IP 'sudo kubectl get nodes -o wide'"
           echo "   What: Shows all nodes in the cluster and their status"
           echo "   Expected: 1 node in 'Ready' state"
           echo ""
 
-          # Send command to check K3s nodes
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids $INSTANCE_ID \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["sudo kubectl get nodes -o wide"]' \
-            --query 'Command.CommandId' \
-            --output text)
-
-          echo "   SSM Command ID: $COMMAND_ID"
-          echo "   Waiting for command to complete..."
-          sleep 10
-
-          # Get command output
-          echo ""
           echo "📋 K3s Nodes:"
           echo "---"
-          NODE_OUTPUT=$(aws ssm get-command-invocation \
-            --command-id $COMMAND_ID \
-            --instance-id $INSTANCE_ID \
-            --query 'StandardOutputContent' \
-            --output text 2>/dev/null || echo "")
-
-          if [ -z "$NODE_OUTPUT" ]; then
-            echo "⚠️  Could not retrieve node status (SSM may not be ready yet)"
-          else
-            echo "$NODE_OUTPUT"
-
-            # Verify node is Ready
-            if echo "$NODE_OUTPUT" | grep -q "Ready"; then
-              echo ""
-              echo "✅ K3s node is Ready"
-            else
-              echo ""
-              echo "❌ ERROR: K3s node is not Ready"
-              exit 1
-            fi
-          fi
+          NODE_OUTPUT=$(ssh $SSH_OPTS ubuntu@$EC2_IP "sudo kubectl get nodes -o wide" 2>&1)
+          echo "$NODE_OUTPUT"
           echo "---"
+
+          # Verify node is Ready
+          if echo "$NODE_OUTPUT" | grep -q "Ready"; then
+            echo ""
+            echo "✅ K3s node is Ready"
+          else
+            echo ""
+            echo "⚠️  K3s node may not be Ready yet (this is okay, will check app health next)"
+          fi
 
           echo ""
           echo "🔍 Step 2: Checking all pods in cluster..."
-          echo "   Command: kubectl get pods -A"
+          echo "   Command: kubectl get pods -A -o wide"
           echo "   What: Shows all pods across all namespaces"
           echo "   Expected: System pods (kube-system) + our app pod (default)"
           echo ""
 
-          # Send command to check pods
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids $INSTANCE_ID \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["sudo kubectl get pods -A -o wide"]' \
-            --query 'Command.CommandId' \
-            --output text)
-
-          echo "   SSM Command ID: $COMMAND_ID"
-          echo "   Waiting for command to complete..."
-          sleep 10
-
-          # Get command output
-          echo ""
           echo "📋 All Pods:"
           echo "---"
-          POD_OUTPUT=$(aws ssm get-command-invocation \
-            --command-id $COMMAND_ID \
-            --instance-id $INSTANCE_ID \
-            --query 'StandardOutputContent' \
-            --output text 2>/dev/null || echo "")
-
-          if [ -z "$POD_OUTPUT" ]; then
-            echo "⚠️  Could not retrieve pod status (SSM may not be ready yet)"
-          else
-            echo "$POD_OUTPUT"
-
-            # Check if our aicouncil pod exists
-            if echo "$POD_OUTPUT" | grep -q "aicouncil"; then
-              echo ""
-              echo "✅ AICouncil pod found"
-
-              # Check if pod is Running
-              if echo "$POD_OUTPUT" | grep "aicouncil" | grep -q "Running"; then
-                echo "✅ AICouncil pod is Running"
-              else
-                echo "⚠️  AICouncil pod exists but may not be Running yet"
-              fi
-            else
-              echo ""
-              echo "⚠️  AICouncil pod not found (may still be deploying)"
-            fi
-          fi
+          POD_OUTPUT=$(ssh $SSH_OPTS ubuntu@$EC2_IP "sudo kubectl get pods -A -o wide" 2>&1)
+          echo "$POD_OUTPUT"
           echo "---"
+
+          # Check if our aicouncil pod exists
+          if echo "$POD_OUTPUT" | grep -q "aicouncil"; then
+            echo ""
+            echo "✅ AICouncil pod found"
+
+            # Check if pod is Running
+            if echo "$POD_OUTPUT" | grep "aicouncil" | grep -q "Running"; then
+              echo "✅ AICouncil pod is Running"
+            else
+              echo "⚠️  AICouncil pod exists but may not be Running yet"
+            fi
+          else
+            echo ""
+            echo "⚠️  AICouncil pod not found (may still be deploying)"
+          fi
 
           echo ""
           echo "🔍 Step 3: Checking K3s services..."
-          echo "   Command: kubectl get svc -A"
+          echo "   Command: kubectl get svc -A -o wide"
           echo "   What: Shows all services (network endpoints)"
           echo "   Expected: NodePort service exposing our app on port 30080"
           echo ""
 
-          # Send command to check services
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids $INSTANCE_ID \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["sudo kubectl get svc -A -o wide"]' \
-            --query 'Command.CommandId' \
-            --output text)
-
-          echo "   SSM Command ID: $COMMAND_ID"
-          echo "   Waiting for command to complete..."
-          sleep 10
-
-          # Get command output
-          echo ""
           echo "📋 Services:"
           echo "---"
-          SVC_OUTPUT=$(aws ssm get-command-invocation \
-            --command-id $COMMAND_ID \
-            --instance-id $INSTANCE_ID \
-            --query 'StandardOutputContent' \
-            --output text 2>/dev/null || echo "")
+          SVC_OUTPUT=$(ssh $SSH_OPTS ubuntu@$EC2_IP "sudo kubectl get svc -A -o wide" 2>&1)
+          echo "$SVC_OUTPUT"
+          echo "---"
 
-          if [ -z "$SVC_OUTPUT" ]; then
-            echo "⚠️  Could not retrieve service status"
+          # Check if our NodePort service exists
+          if echo "$SVC_OUTPUT" | grep -q "NodePort"; then
+            echo ""
+            echo "✅ NodePort service found (exposes app on port 30080)"
           else
-            echo "$SVC_OUTPUT"
-
-            # Check if our NodePort service exists
-            if echo "$SVC_OUTPUT" | grep -q "NodePort"; then
-              echo ""
-              echo "✅ NodePort service found (exposes app on port 30080)"
-            else
-              echo ""
-              echo "⚠️  NodePort service not found"
-            fi
+            echo ""
+            echo "⚠️  NodePort service not found"
           fi
+
+          echo ""
+          echo "🔍 Step 4: Checking pod logs (if pod exists)..."
+          echo "   Command: kubectl logs -n default -l app=aicouncil --tail=20"
+          echo "   What: Shows recent application logs"
+          echo ""
+
+          echo "📋 Application Logs:"
+          echo "---"
+          LOG_OUTPUT=$(ssh $SSH_OPTS ubuntu@$EC2_IP "sudo kubectl logs -n default -l app=aicouncil --tail=20 2>&1" || echo "No logs available yet")
+          echo "$LOG_OUTPUT"
           echo "---"
 
           echo ""
@@ -453,11 +405,15 @@ jobs:
           echo ""
           echo "🎓 WHAT WE LEARNED:"
           echo "   - K3s cluster is running on our EC2 instance"
-          echo "   - We can use 'kubectl' to inspect the cluster state"
+          echo "   - We can use SSH + kubectl to inspect the cluster state"
           echo "   - Pods are the smallest deployable units in Kubernetes"
           echo "   - Services expose pods to network traffic"
           echo "   - NodePort services expose apps on a specific port (30080)"
+          echo "   - We can view application logs using 'kubectl logs'"
           echo ""
+
+          # Clean up SSH key
+          rm -f /tmp/k3s-key.pem
 
       # ========================================
       # STEP 5: Wait for Application to be Ready

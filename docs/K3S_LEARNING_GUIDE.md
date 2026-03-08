@@ -68,11 +68,12 @@ NodePort Service (Port 30080)
 - **Our Choice**: 30080 (easy to remember, like 8080)
 - **Access**: `http://<EC2_IP>:30080`
 
-### 4. **AWS Systems Manager (SSM)**
-- **What**: Allows running commands on EC2 without SSH keys
-- **Why**: More secure, no key management, works through IAM
-- **How**: `aws ssm send-command` → runs command → `get-command-invocation` → gets output
+### 4. **SSH (Secure Shell)**
+- **What**: Allows running commands on EC2 remotely
+- **Why**: Simple, direct, works immediately when instance boots
+- **How**: `ssh -i key.pem ubuntu@<IP> "command"`
 - **Use Case**: Running `kubectl` commands from GitHub Actions
+- **Security**: Fine for ephemeral E2E tests (infrastructure destroyed after each run)
 
 ### 5. **user-data.sh - Bootstrap Script**
 - **What**: Script that runs when EC2 instance first boots
@@ -193,18 +194,21 @@ sudo kubectl describe pod <pod-name>
 sudo kubectl get pod <pod-name> -o yaml
 ```
 
-### From GitHub Actions (via SSM)
+### From GitHub Actions (via SSH)
 ```bash
-# Run any command on EC2
-aws ssm send-command \
-  --instance-ids <instance-id> \
-  --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["<your-command>"]'
+# Get SSH key from Terraform
+terraform output -raw ssh_private_key > /tmp/k3s-key.pem
+chmod 600 /tmp/k3s-key.pem
 
-# Get command output
-aws ssm get-command-invocation \
-  --command-id <command-id> \
-  --instance-id <instance-id>
+# Run any command on EC2
+ssh -i /tmp/k3s-key.pem ubuntu@<ec2-ip> "sudo kubectl get nodes"
+
+# Run multiple commands
+ssh -i /tmp/k3s-key.pem ubuntu@<ec2-ip> "
+  sudo kubectl get nodes
+  sudo kubectl get pods -A
+  sudo kubectl get svc -A
+"
 ```
 
 ## 📖 Further Reading
