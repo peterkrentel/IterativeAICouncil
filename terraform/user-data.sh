@@ -107,5 +107,88 @@ mkdir -p /home/ubuntu/.kube
 cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
 chown -R ubuntu:ubuntu /home/ubuntu/.kube
 
-echo "K3s installation complete!"
+# Deploy application manifests
+echo "Deploying application..."
+
+# Create namespace and secrets
+kubectl create secret generic aicouncil-secrets \
+  --from-literal=GROQ_API_KEY="" \
+  --from-literal=GOOGLE_API_KEY="" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Create deployment
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aicouncil
+  labels:
+    app: aicouncil
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aicouncil
+  template:
+    metadata:
+      labels:
+        app: aicouncil
+    spec:
+      containers:
+      - name: aicouncil
+        image: ${ecr_registry}:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: GROQ_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aicouncil-secrets
+              key: GROQ_API_KEY
+        - name: GOOGLE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aicouncil-secrets
+              key: GOOGLE_API_KEY
+        - name: PORT
+          value: "8000"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aicouncil
+spec:
+  type: NodePort
+  ports:
+  - port: 80
+    targetPort: 8000
+    nodePort: 30080
+    protocol: TCP
+    name: http
+  selector:
+    app: aicouncil
+EOF
+
+echo "K3s installation and deployment complete!"
 
