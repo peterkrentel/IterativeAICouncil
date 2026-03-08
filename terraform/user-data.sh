@@ -11,6 +11,24 @@ apt-get install -y curl wget git
 # Install AWS CLI for ECR authentication
 apt-get install -y awscli
 
+# Install ECR credential helper (needed for K3s/containerd to pull from ECR)
+echo "Installing ECR credential helper..."
+wget https://amazon-ecr-credential-helper-releases.s3.us-east-2.amazonaws.com/0.7.1/linux-amd64/docker-credential-ecr-login
+chmod +x docker-credential-ecr-login
+mv docker-credential-ecr-login /usr/local/bin/
+
+# Configure K3s/containerd to use ECR credential helper
+# This MUST be done BEFORE K3s is installed so containerd picks up the config
+echo "Configuring K3s/containerd for ECR authentication..."
+mkdir -p /etc/rancher/k3s
+cat > /etc/rancher/k3s/registries.yaml <<EOF
+configs:
+  "${ecr_registry}":
+    auth:
+      username: AWS
+      password_command: "/usr/local/bin/docker-credential-ecr-login get"
+EOF
+
 # Install K3s
 echo "Installing K3s..."
 curl -sfL https://get.k3s.io | sh -s - \
@@ -87,20 +105,6 @@ spec:
   selector:
     app: traefik
 EOF
-
-# Configure ECR authentication helper
-echo "Configuring ECR authentication..."
-mkdir -p /root/.docker
-cat > /root/.docker/config.json <<EOF
-{
-  "credsStore": "ecr-login"
-}
-EOF
-
-# Install ECR credential helper
-wget https://amazon-ecr-credential-helper-releases.s3.us-east-2.amazonaws.com/0.7.1/linux-amd64/docker-credential-ecr-login
-chmod +x docker-credential-ecr-login
-mv docker-credential-ecr-login /usr/local/bin/
 
 # Create kubeconfig for remote access
 mkdir -p /home/ubuntu/.kube
