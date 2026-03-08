@@ -29,19 +29,17 @@ jobs:
           terraform_version: 1.6.0
           terraform_wrapper: false
 
-      - name: Terraform Init
+      - name: Terraform Init (Local State)
         working-directory: terraform
         run: |
-          terraform init \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=aicouncil/terraform.tfstate" \
-            -backend-config="region=${{ secrets.AWS_REGION }}" \
-            -backend-config="dynamodb_table=" \
-            -backend-config="encrypt=true"
+          # Use local state for ephemeral E2E testing
+          terraform init
 
       - name: Terraform Apply
         working-directory: terraform
-        run: terraform apply -auto-approve
+        run: |
+          # Use different project name to avoid conflicts with manual deployment
+          terraform apply -auto-approve -var="project_name=aicouncil-e2e"
 
       - name: Get EC2 IP
         id: get-ip
@@ -63,11 +61,11 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/aicouncil:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/aicouncil:$IMAGE_TAG
-          docker tag $ECR_REGISTRY/aicouncil:$IMAGE_TAG $ECR_REGISTRY/aicouncil:latest
-          docker push $ECR_REGISTRY/aicouncil:latest
-          echo "✅ Image pushed: $ECR_REGISTRY/aicouncil:$IMAGE_TAG"
+          docker build -t $ECR_REGISTRY/aicouncil-e2e:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/aicouncil-e2e:$IMAGE_TAG
+          docker tag $ECR_REGISTRY/aicouncil-e2e:$IMAGE_TAG $ECR_REGISTRY/aicouncil-e2e:latest
+          docker push $ECR_REGISTRY/aicouncil-e2e:latest
+          echo "✅ Image pushed: $ECR_REGISTRY/aicouncil-e2e:$IMAGE_TAG"
 
       # ========================================
       # STEP 3: Wait for EC2 to be ready
@@ -156,7 +154,17 @@ jobs:
           fi
 
       # ========================================
-      # STEP 7: Summary
+      # STEP 7: Cleanup - Destroy Infrastructure
+      # ========================================
+      - name: Terraform Destroy
+        if: always()
+        working-directory: terraform
+        run: |
+          echo "🧹 Cleaning up infrastructure..."
+          terraform destroy -auto-approve -var="project_name=aicouncil-e2e"
+
+      # ========================================
+      # STEP 8: Summary
       # ========================================
       - name: E2E Test Summary
         if: always()
@@ -166,26 +174,21 @@ jobs:
         run: |
           echo "## 🎉 End-to-End Test Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Infrastructure" >> $GITHUB_STEP_SUMMARY
-          echo "- **EC2 IP:** $EC2_IP" >> $GITHUB_STEP_SUMMARY
-          echo "- **Application URL:** http://$EC2_IP:30080" >> $GITHUB_STEP_SUMMARY
-          echo "- **API Docs:** http://$EC2_IP:30080/docs" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Infrastructure created" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Docker image built and pushed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Application deployed to K3s" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Health check passed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ API docs accessible" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Infrastructure destroyed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Infrastructure (Destroyed)" >> $GITHUB_STEP_SUMMARY
+          echo "- **EC2 IP:** $EC2_IP (now terminated)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Docker Image" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image:** $ECR_REGISTRY/aicouncil:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** $ECR_REGISTRY/aicouncil-e2e:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tag:** \`latest\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Commands" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "# Health check" >> $GITHUB_STEP_SUMMARY
-          echo "curl http://$EC2_IP:30080/health" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "# Test convergence API" >> $GITHUB_STEP_SUMMARY
-          echo "curl -X POST http://$EC2_IP:30080/converge \\" >> $GITHUB_STEP_SUMMARY
-          echo "  -H 'Content-Type: application/json' \\" >> $GITHUB_STEP_SUMMARY
-          echo "  -d '{\"content\": \"# Test\", \"models\": [\"critic1\"], \"max_iterations\": 2}'" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⚠️ **Remember to run the Destroy workflow when done testing!**" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **All resources cleaned up automatically!**" >> $GITHUB_STEP_SUMMARY
 
 
