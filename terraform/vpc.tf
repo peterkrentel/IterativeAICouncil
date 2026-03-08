@@ -92,6 +92,15 @@ resource "aws_security_group" "k3s" {
     description = "K3s API access"
   }
 
+  # NodePort for application
+  ingress {
+    from_port   = 30080
+    to_port     = 30080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Application NodePort access"
+  }
+
   # Outbound - allow all
   egress {
     from_port   = 0
