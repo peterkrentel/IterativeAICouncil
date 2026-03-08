@@ -33,6 +33,8 @@ jobs:
         working-directory: terraform
         run: |
           # Use local state for ephemeral E2E testing
+          # Temporarily remove backend configuration to use local state
+          mv backend.tf backend.tf.bak
           terraform init
 
       - name: Terraform Apply
@@ -162,6 +164,8 @@ jobs:
         run: |
           echo "🧹 Cleaning up infrastructure..."
           terraform destroy -auto-approve -var="project_name=aicouncil-e2e"
+          # Restore backend configuration
+          mv backend.tf.bak backend.tf || true
 
       # ========================================
       # STEP 8: Summary
