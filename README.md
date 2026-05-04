@@ -344,6 +344,20 @@ The integrator doesn't blindly accept all feedback. It uses judgment to:
 - **02 - Terraform Apply** - Manual trigger with approval (deploys infrastructure)
 - **03 - Build and Deploy** - Auto-runs on push to main (builds Docker, deploys to K3s)
 - **04 - Destroy** - Manual trigger only (tears down infrastructure)
+- **06 - E2E Test (k3d + Helm, cloud-agnostic)** - Runs on every PR (builds image locally, spins up k3d cluster, deploys via Helm — no AWS required)
+
+### ☁️ E2E Testing Options
+
+| | Cloud-Agnostic (Default) | AWS-Based (Optional) |
+|---|---|---|
+| **Workflow** | `06-e2e-k3d.yml` | `05-e2e-test.yml` |
+| **Triggers** | Every PR + manual | Manual only |
+| **Requirements** | None | AWS account + secrets |
+| **Infrastructure** | k3d (k3s-in-docker) | EC2 + ECR + K3s |
+| **Cost** | Free | ~$0.01–$0.10/run |
+| **Image source** | Built locally, imported | Pushed to ECR |
+
+👉 **Details and local dev instructions:** [TESTING.md](TESTING.md)
 
 ### 🎯 Usage Modes
 
