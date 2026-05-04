@@ -1,0 +1,144 @@
+name: "06 - E2E Test (k3d + Helm, cloud-agnostic)"
+
+# Default CI E2E: cloud-agnostic, runs on every PR and can be triggered manually.
+# No AWS/Azure credentials required. Image is built locally and imported into k3d.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-k3d:
+    name: E2E (k3d + Helm)
+    runs-on: ubuntu-latest
+
+    steps:
+      # --------------------------------------------------------
+      # 1. Checkout
+      # --------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --------------------------------------------------------
+      # 2. Install k3d (k3s-in-docker)
+      # --------------------------------------------------------
+      - name: Install k3d
+        run: |
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          k3d version
+
+      # --------------------------------------------------------
+      # 3. Create k3d cluster with NodePort 30080 mapped to
+      #    localhost:30080 so curl http://localhost:30080/health
+      #    works without extra SSH or port-forwarding.
+      # --------------------------------------------------------
+      - name: Create k3d cluster
+        run: |
+          k3d cluster create aicouncil \
+            --servers 1 \
+            --agents 0 \
+            -p "30080:30080@server:0" \
+            --wait
+          kubectl get nodes
+
+      # --------------------------------------------------------
+      # 4. Build Docker image (no push, no registry dependency)
+      # --------------------------------------------------------
+      - name: Build Docker image
+        run: |
+          docker build -t aicouncil:${{ github.sha }} .
+          echo "✅ Image built: aicouncil:${{ github.sha }}"
+
+      # --------------------------------------------------------
+      # 5. Import the image into k3d so Kubernetes can use it
+      #    without pulling from any registry.
+      # --------------------------------------------------------
+      - name: Import image into k3d
+        run: |
+          k3d image import aicouncil:${{ github.sha }} -c aicouncil
+          echo "✅ Image imported into k3d cluster"
+
+      # --------------------------------------------------------
+      # 6. Deploy via Helm
+      # --------------------------------------------------------
+      - name: Deploy via Helm
+        run: |
+          helm upgrade --install aicouncil ./helm/aicouncil \
+            --set image.repository=aicouncil \
+            --set image.tag=${{ github.sha }} \
+            --set image.pullPolicy=IfNotPresent \
+            --wait \
+            --timeout 120s
+
+          echo "Helm release status:"
+          helm status aicouncil
+
+      # --------------------------------------------------------
+      # 7. Wait for rollout to complete
+      # --------------------------------------------------------
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/aicouncil --timeout=120s
+          kubectl get pods -o wide
+          kubectl get svc
+
+      # --------------------------------------------------------
+      # 8. Health check: curl /health via the NodePort
+      # --------------------------------------------------------
+      - name: Health check - /health
+        run: |
+          echo "Waiting for application to be ready on http://localhost:30080/health ..."
+          for i in $(seq 1 30); do
+            echo "Attempt $i/30 ..."
+            if curl -fsS http://localhost:30080/health; then
+              echo ""
+              echo "✅ /health returned OK"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "❌ Application never became healthy on /health"
+          exit 1
+
+      # --------------------------------------------------------
+      # 9. Optional: check /docs endpoint is reachable
+      # --------------------------------------------------------
+      - name: Health check - /docs
+        run: |
+          if curl -fsS http://localhost:30080/docs > /dev/null; then
+            echo "✅ /docs is reachable"
+          else
+            echo "⚠️  /docs not reachable (non-fatal)"
+          fi
+
+      # --------------------------------------------------------
+      # 10. Diagnostics (only on failure)
+      # --------------------------------------------------------
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "===== kubectl get pods ====="
+          kubectl get pods -o wide || true
+
+          echo "===== kubectl get svc ====="
+          kubectl get svc || true
+
+          echo "===== kubectl describe pods ====="
+          kubectl describe pods -l app=aicouncil || true
+
+          echo "===== kubectl logs ====="
+          kubectl logs -l app=aicouncil --tail=200 || true
+
+          echo "===== kubectl get events ====="
+          kubectl get events --sort-by=.lastTimestamp | tail -n 50 || true
+
+      # --------------------------------------------------------
+      # 11. Cleanup (always runs, even on failure)
+      # --------------------------------------------------------
+      - name: Cleanup k3d cluster
+        if: always()
+        run: |
+          k3d cluster delete aicouncil || true
+          echo "✅ Cluster deleted"

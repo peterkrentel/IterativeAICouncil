@@ -1,5 +1,85 @@
 # Testing Guide
 
+## E2E Testing Options
+
+There are two E2E testing paths available. The **default CI E2E** is cloud-agnostic and runs automatically on every pull request. The **AWS E2E** is an optional manual workflow for testing on real cloud infrastructure.
+
+### Option A: Cloud-Agnostic CI E2E (Default — k3d + Helm)
+
+- **Workflow:** `.github/workflows/06-e2e-k3d.yml`
+- **Triggers:** Every pull request + manual (`workflow_dispatch`)
+- **Requirements:** None — runs entirely on the GitHub Actions runner. No cloud account or credentials needed.
+- **How it works:**
+  1. Builds the Docker image locally on the runner.
+  2. Spins up a [k3d](https://k3d.io) (k3s-in-docker) cluster.
+  3. Imports the built image directly into the cluster — **no registry push/pull**.
+  4. Deploys the app via the Helm chart at `helm/aicouncil/`.
+  5. Waits for rollout and curls `http://localhost:30080/health`.
+  6. Cleans up the cluster in an `always()` step.
+
+**Run locally (same steps as CI):**
+```bash
+# 1. Install k3d: https://k3d.io/#installation
+# 2. Create cluster
+k3d cluster create aicouncil -p "30080:30080@server:0" --wait
+
+# 3. Build & import image
+docker build -t aicouncil:dev .
+k3d image import aicouncil:dev -c aicouncil
+
+# 4. Deploy
+helm upgrade --install aicouncil ./helm/aicouncil \
+  --set image.tag=dev \
+  --set image.pullPolicy=IfNotPresent
+
+# 5. Test
+curl http://localhost:30080/health
+
+# 6. Cleanup
+k3d cluster delete aicouncil
+```
+
+---
+
+### Option B: AWS-Based E2E (Optional / Manual)
+
+- **Workflow:** `.github/workflows/05-e2e-test.yml`
+- **Triggers:** **Manual only** (`workflow_dispatch` — does **not** run on push or PR)
+- **Use when:** You want to validate a production-like deployment on real AWS infrastructure (EC2 + K3s + ECR).
+
+#### Prerequisites
+
+The following GitHub repository secrets must be configured before running this workflow:
+
+| Secret | Description |
+|---|---|
+| `AWS_ROLE_ARN` | IAM Role ARN for GitHub Actions OIDC federation (e.g. `arn:aws:iam::123456789012:role/github-actions-role`) |
+| `AWS_REGION` | AWS region (e.g. `us-east-1`) |
+| `GROQ_API_KEY` | Groq API key (get from https://console.groq.com/keys) |
+| `GOOGLE_API_KEY` | Google Gemini API key (get from https://aistudio.google.com/app/apikey) |
+
+Run `./scripts/bootstrap.sh` once to create the AWS OIDC trust policy and Terraform state bucket. It outputs the values you need for the secrets above.
+
+#### How to trigger
+
+1. Go to **Actions** → **End-to-End Test** → **Run workflow**.
+2. The workflow will:
+   - Run Terraform to create an EC2 instance + ECR repository (ephemeral, project name `aicouncil-e2e`).
+   - Build and push the Docker image to ECR.
+   - Wait for K3s on the EC2 instance to deploy the pod.
+   - Curl the health endpoint on the EC2 public IP.
+   - **Tear down all infrastructure** at the end regardless of pass/fail.
+
+#### Cost and cleanup
+
+- **Estimated cost:** $0.01–$0.10 per run (EC2 `t3.micro` for ~10–15 minutes).
+- **Cleanup:** The workflow runs `terraform destroy` in a `finally` step, so infrastructure is removed automatically.
+- **Manual cleanup (if workflow fails mid-run):** Run workflow **04 - Destroy** manually, or run `terraform destroy` locally with `terraform/` pointed at the correct state.
+
+> ⚠️ **Note:** If you interrupt the workflow before the destroy step, AWS resources may remain and incur charges. Always verify with `aws ec2 describe-instances` or the AWS Console.
+
+---
+
 ## Quick Start
 
 ### 1. Install Dependencies
@@ -246,8 +326,7 @@ python aicouncil.py serve --port 8080
 ## Next Steps
 
 Once local testing passes:
-1. Commit changes
-2. Push to GitHub
-3. Follow QUICKSTART.md to deploy to AWS
-4. Test production deployment
+1. Commit and push — the cloud-agnostic E2E workflow (`06-e2e-k3d.yml`) runs automatically on your PR.
+2. To test on real AWS infrastructure, trigger the **End-to-End Test** workflow manually (see **Option B** above).
+3. Follow [QUICKSTART.md](QUICKSTART.md) to deploy to AWS for production use.
 

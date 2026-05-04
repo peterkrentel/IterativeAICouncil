@@ -1,0 +1,41 @@
+image:
+  repository: aicouncil
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Number of pod replicas
+replicaCount: 1
+
+service:
+  type: NodePort
+  port: 80
+  targetPort: 8000
+  nodePort: 30080
+
+# Resource limits/requests
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+# Environment variables passed directly (safe for non-sensitive config).
+# For production, use existingSecret below instead.
+env:
+  PORT: "8000"
+
+# Optional: reference an existing Kubernetes Secret for API keys.
+# If set, the secret must contain GROQ_API_KEY and/or GOOGLE_API_KEY keys.
+# Example:
+#   kubectl create secret generic aicouncil-secrets \
+#     --from-literal=GROQ_API_KEY=gsk_... \
+#     --from-literal=GOOGLE_API_KEY=AIza...
+existingSecret: ""
+
+# Inline secret values (only used when existingSecret is empty).
+# Do NOT commit real keys here — pass them via --set or GitHub Actions secrets.
+secrets:
+  GROQ_API_KEY: ""
+  GOOGLE_API_KEY: ""
